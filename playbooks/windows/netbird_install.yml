@@ -6,7 +6,7 @@
     - name: Upload NetBird install script
       ansible.windows.win_copy:
         src: "netbird_install.ps1"
-        dest: "C:\\Temp\install_netbird.ps1"
+        dest: "C:\Temp\install_netbird.ps1"
 
     - name: Execute NetBird installation script
       ansible.windows.win_shell: |
