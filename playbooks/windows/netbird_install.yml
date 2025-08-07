@@ -5,8 +5,8 @@
   tasks:
     - name: Upload NetBird install script
       ansible.windows.win_copy:
-        src: https://github.com/thaper0007/cyberbud/blob/main/playbooks/windows/netbird_install.ps1
-        dest: C:\Temp\install_netbird.ps1
+        src: "netbird_install.ps1"
+        dest: "C:\\Temp\install_netbird.ps1"
 
     - name: Execute NetBird installation script
       ansible.windows.win_shell: |
