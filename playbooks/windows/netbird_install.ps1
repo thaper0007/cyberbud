@@ -1,4 +1,4 @@
-# Fetch the latest NetBird release asset via GitHub API
+# Existing code to download and install NetBird
 $release = Invoke-RestMethod -Uri https://api.github.com/repos/netbirdio/netbird/releases/latest
 $asset = $release.assets | Where-Object { $_.name -match 'netbird_installer_.*_windows_amd64\.exe' } | Select -First 1
 
@@ -20,3 +20,12 @@ Write-Host "Cleaning up..."
 Remove-Item $installerPath -Force
 
 Write-Host "NetBird installation complete."
+
+# **New part:** Connect NetBird to network using setup key
+$netbirdExe = "C:\Program Files\Netbird\netbird.exe"
+$setupKey = "645A7BD2-CFD7-4173-8EB9-C00A5D0A7FBE"
+
+Write-Host "Connecting NetBird to network..."
+& $netbirdExe connect --url https://netbird.cyberbud.ca --authkey $setupKey
+
+Write-Host "NetBird connected successfully."
