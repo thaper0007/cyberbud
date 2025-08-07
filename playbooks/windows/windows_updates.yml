@@ -1,0 +1,14 @@
+---
+- name: Update Windows Servers
+  hosts: windows
+  gather_facts: no
+  tasks:
+    - name: Install PSWindowsUpdate module
+      ansible.windows.win_psmodule:
+        name: PSWindowsUpdate
+        state: present
+
+    - name: Install all available Windows updates
+      ansible.windows.win_shell: |
+        Import-Module PSWindowsUpdate
+        Install-WindowsUpdate -AcceptAll -AutoReboot
