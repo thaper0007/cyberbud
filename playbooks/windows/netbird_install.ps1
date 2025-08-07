@@ -39,18 +39,23 @@ Write-Host "Starting NetBird automatic login..."
 $netbirdExecutablePath = "C:\Program Files\NetBird\netbird.exe"
 
 try {
+    # Define the arguments as an array of strings
+    $arguments = @("up", "--setup-key", $setupKey)
+
+    # Add the management URL argument only if it exists
     if ($managementUrl) {
-        $netbirdLoginCommand = "`"$netbirdExecutablePath`" up --setup-key `"$setupKey`" --management-url `"$managementUrl`""
+        $arguments += "--management-url"
+        $arguments += $managementUrl
     }
-    else {
-        $netbirdLoginCommand = "`"$netbirdExecutablePath`" up --setup-key `"$setupKey`""
-    }
-    
-    # Execute the command
-    $netbirdOutput = & $netbirdLoginCommand
-    Write-Host "NetBird login command executed. Output:"
-    $netbirdOutput | Write-Host
+
+    # Execute the command using Start-Process, passing the arguments separately
+    Start-Process -FilePath $netbirdExecutablePath -ArgumentList $arguments -Wait -NoNewWindow
     Write-Host "NetBird client should now be connected."
+    
+    # Check the exit code of the last process
+    if ($LASTEXITCODE -ne 0) {
+        throw "NetBird login command returned a non-zero exit code: $LASTEXITCODE"
+    }
 }
 catch {
     Write-Error "NetBird login failed. Error: $_"
