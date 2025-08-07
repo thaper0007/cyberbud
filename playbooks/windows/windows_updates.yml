@@ -1,6 +1,6 @@
 ---
 - name: Update Windows Servers
-  hosts: windows
+  hosts: windows_servers
   gather_facts: no
   tasks:
     - name: Install PSWindowsUpdate module
