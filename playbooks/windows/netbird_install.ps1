@@ -23,7 +23,7 @@ Write-Host "NetBird installation complete."
 
 # **New part:** Connect NetBird to network using setup key
 $netbirdExe = "C:\Program Files\Netbird\netbird.exe"
-$setupKey = "645A7BD2-CFD7-4173-8EB9-C00A5D0A7FBE"
+$setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"
 
 Write-Host "Connecting NetBird to network..."
 & $netbirdExe connect --url https://netbird.cyberbud.ca --authkey $setupKey
