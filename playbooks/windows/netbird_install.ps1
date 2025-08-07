@@ -1,57 +1,77 @@
-# Fetch the latest NetBird release asset via GitHub API
-Write-Host "Fetching latest NetBird release info..."
-$release = Invoke-RestMethod -Uri https://api.github.com/repos/netbirdio/netbird/releases/latest
-$asset = $release.assets | Where-Object { $_.name -match 'netbird_installer_.*_windows_amd64\.exe' } | Select-Object -First 1
+# ==============================================================================
+# NetBird Installation and Automated Login Script
+# This script installs NetBird on a Windows machine, then logs in automatically
+# using a setup key. It's designed to be executed via Ansible's win_shell module.
+#
+# Prerequisites:
+# - The NetBird installer file (.msi) must be available on the target machine.
+# - The NetBird management service URL and a valid setup key are required.
+# ==============================================================================
 
-if (-not $asset) {
-    Write-Error "No suitable NetBird installer found in the latest release."
+# --- Configuration Variables ---
+# Define your NetBird installer path, setup key, and management URL here.
+# These variables can be passed as Ansible variables.
+
+$installerPath = "C:\Temp\netbird-ui-windows_0.53.0_windows_amd64.msi"
+$setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"  # Replace with your actual setup key
+$managementUrl = "https://netbird.cyberbud.ca:443" # Replace with your management URL, or omit for NetBird Cloud
+
+# --- Step 1: Install NetBird ---
+Write-Host "Starting NetBird installation..."
+
+# The 'msiexec' command is used for installing MSI packages.
+# /i: Specifies the installation option.
+# /qn: Specifies the quiet mode, with no user interface.
+# /L*v: A log file option for detailed logging, useful for debugging.
+# C:\Temp\netbird_install.log: The path for the installation log file.
+try {
+    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$installerPath`" /qn /L*v C:\Temp\netbird_install.log"
+    Write-Host "NetBird installation completed successfully."
+}
+catch {
+    Write-Error "NetBird installation failed. Error: $_"
+    exit 1 # Exit with a non-zero code to indicate failure
+}
+
+# --- Step 2: Automatic Login with Setup Key ---
+Write-Host "Starting NetBird automatic login..."
+
+# The 'netbird up' command is used to connect the client to the network.
+# --setup-key: Uses a pre-authenticated key for registration.
+# --management-url: Specifies the URL of the self-hosted management service.
+# Start-Process is used to run the command and wait for its completion.
+# The `&` operator is used to execute a command from a string.
+try {
+    # Check if the management URL is provided
+    if ($managementUrl) {
+        $netbirdLoginCommand = "netbird up --setup-key `"$setupKey`" --management-url `"$managementUrl`""
+    }
+    else {
+        $netbirdLoginCommand = "netbird up --setup-key `"$setupKey`""
+    }
+    
+    # Execute the command
+    $netbirdOutput = & $netbirdLoginCommand
+    Write-Host "NetBird login command executed. Output:"
+    $netbirdOutput | Write-Host
+    Write-Host "NetBird client should now be connected."
+}
+catch {
+    Write-Error "NetBird login failed. Error: $_"
+    exit 1 # Exit with a non-zero code to indicate failure
+}
+
+# --- Step 3: Verify Status (Optional) ---
+Write-Host "Checking NetBird status..."
+
+try {
+    $statusOutput = netbird status
+    Write-Host "NetBird Status:"
+    $statusOutput | Write-Host
+}
+catch {
+    Write-Error "Failed to get NetBird status. Error: $_"
     exit 1
 }
 
-$downloadUrl = $asset.browser_download_url
-$installerPath = Join-Path $env:TEMP $asset.name
-
-Write-Host "Downloading NetBird from: $downloadUrl"
-Invoke-WebRequest -Uri $downloadUrl -OutFile $installerPath
-
-Write-Host "Installing NetBird silently..."
-Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
-
-Write-Host "Cleaning up installer..."
-Remove-Item $installerPath -Force
-
-# Connect/login NetBird with auth key
-$netbirdExe = "C:\Program Files\Netbird\netbird.exe"
-$authKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"
-
-Write-Host "Connecting NetBird to network with login command..."
-$cmd = "& `"$netbirdExe`" login --authkey $authKey"
-
-Write-Host "Running: $cmd"
-Invoke-Expression $cmd
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "NetBird login command failed with exit code $LASTEXITCODE"
-    exit 1
-}
-
-Write-Host "NetBird login successful."
-
-# Optional: Add scheduled task for auto-start on reboot & user login
-
-$action = New-ScheduledTaskAction -Execute $netbirdExe -Argument "daemon"
-$trigger1 = New-ScheduledTaskTrigger -AtLogon
-$trigger2 = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-
-$taskName = "NetBirdAutoStart"
-
-if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-    Register-ScheduledTask -Action $action -Trigger $trigger1, $trigger2 -Principal $principal -TaskName $taskName -Description "Auto start NetBird daemon on reboot and user login"
-    Write-Host "Scheduled task '$taskName' created."
-} else {
-    Write-Host "Scheduled task '$taskName' already exists."
-}
-
-Write-Host "NetBird installation and setup complete."
-exit 0
+Write-Host "Script finished."
