@@ -36,18 +36,14 @@ catch {
 # --- Step 2: Automatic Login with Setup Key ---
 Write-Host "Starting NetBird automatic login..."
 
-# The 'netbird up' command is used to connect the client to the network.
-# --setup-key: Uses a pre-authenticated key for registration.
-# --management-url: Specifies the URL of the self-hosted management service.
-# Start-Process is used to run the command and wait for its completion.
-# The `&` operator is used to execute a command from a string.
+$netbirdExecutablePath = "C:\Program Files\NetBird\netbird.exe"
+
 try {
-    # Check if the management URL is provided
     if ($managementUrl) {
-        $netbirdLoginCommand = "netbird up --setup-key `"$setupKey`" --management-url `"$managementUrl`""
+        $netbirdLoginCommand = "`"$netbirdExecutablePath`" up --setup-key `"$setupKey`" --management-url `"$managementUrl`""
     }
     else {
-        $netbirdLoginCommand = "netbird up --setup-key `"$setupKey`""
+        $netbirdLoginCommand = "`"$netbirdExecutablePath`" up --setup-key `"$setupKey`""
     }
     
     # Execute the command
@@ -58,7 +54,7 @@ try {
 }
 catch {
     Write-Error "NetBird login failed. Error: $_"
-    exit 1 # Exit with a non-zero code to indicate failure
+    exit 1
 }
 
 # --- Step 3: Verify Status (Optional) ---
