@@ -10,8 +10,9 @@
 
     - name: Backup all GPOs to folder
       ansible.windows.win_shell: |
-        $backupPath = "C:\GPO_Backups\{{ ansible_date_time.date }}"
-        Import-Module GroupPolicy
-        Backup-GPO -All -Path $backupPath
-      args:
-        executable: powershell.exe
+       $backupPath = 'C:\\GPO_Backups\\{{ ansible_date_time.date }}'
+       Import-Module GroupPolicy
+       Backup-GPO -All -Path $backupPath
+     args:
+       executable: powershell.exe
+
