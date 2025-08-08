@@ -3,16 +3,22 @@
   hosts: windows_servers
   gather_facts: yes
   tasks:
-    - name: Create backup folder if not exists
+    - name: Ensure backup root folder exists
       ansible.windows.win_file:
-        path: "C:\\GPO_Backups\\{{ ansible_date_time.date }}"
+        path: C:\GPO_Backups
         state: directory
 
-    - name: Backup all GPOs to folder
+    - name: Backup all GPOs to dated folder
       ansible.windows.win_shell: |
-       $backupPath = 'C:\\GPO_Backups\\{{ ansible_date_time.date }}'
-       Import-Module GroupPolicy
-       Backup-GPO -All -Path $backupPath
-     args:
-       executable: powershell.exe
+        $backupPath = 'C:\\GPO_Backups\\{{ ansible_date_time.date }}'
+        if (-not (Test-Path $backupPath)) {
+          New-Item -Path $backupPath -ItemType Directory | Out-Null
+        }
+        Import-Module GroupPolicy
+        Backup-GPO -All -Path $backupPath
+      args:
+        executable: powershell.exe
 
+    - name: Show backup folder path
+      debug:
+        msg: "GPO backups saved to C:\\GPO_Backups\\{{ ansible_date_time.date }}"
