@@ -1,57 +1,38 @@
 ---
-- name: Generate and fetch inactive users report from DCs
+- name: Generate inactive users report on Domain Controllers
   hosts: windows_servers
-  gather_facts: no
+  gather_facts: yes
   tasks:
-
-    - name: Ensure Reports folder exists on DC
-      ansible.windows.win_file:
+    - name: Create Reports folder if missing
+      win_file:
         path: C:\Reports
         state: directory
 
-    - name: Generate inactive users report CSV or TXT on DC
-      ansible.windows.win_shell: |
-        $daysInactive = 90
+    - name: Check if ActiveDirectory module is available
+      win_shell: |
+        if (Get-Module -ListAvailable -Name ActiveDirectory) { Write-Output "Found" } else { Write-Output "NotFound" }
+      register: ad_module_check
+
+    - name: Fail if ActiveDirectory module not found
+      fail:
+        msg: "ActiveDirectory PowerShell module is not available on the host."
+      when: ad_module_check.stdout != "Found"
+
+    - name: Generate inactive users report CSV on DC
+      win_shell: |
+        $daysInactive = 2
         $dateLimit = (Get-Date).AddDays(-$daysInactive)
         Import-Module ActiveDirectory
         $inactiveUsers = Get-ADUser -Filter {LastLogonDate -lt $dateLimit -and Enabled -eq $true} -Properties LastLogonDate |
                          Select-Object Name, SamAccountName, LastLogonDate
+        $reportPath = "C:\Reports\InactiveUsers_$(Get-Date -Format yyyy-MM-dd).csv"
+        $notePath = "C:\Reports\InactiveUsers_$(Get-Date -Format yyyy-MM-dd).txt"
+
         if ($inactiveUsers.Count -eq 0) {
-          'No inactive users found or attribute LastLogonDate missing' | Out-File "C:\\Reports\\InactiveUsers_$(Get-Date -Format yyyy-MM-dd).txt"
-        } else {
-          $inactiveUsers | Export-Csv -Path "C:\\Reports\\InactiveUsers_$(Get-Date -Format yyyy-MM-dd).csv" -NoTypeInformation
+          "No inactive users found or attribute LastLogonDate missing" | Out-File $notePath -Encoding UTF8
+        }
+        else {
+          $inactiveUsers | Export-Csv -Path $reportPath -NoTypeInformation -Encoding UTF8
         }
       args:
         executable: powershell.exe
-
-    - name: Find the generated report file on DC
-      ansible.windows.win_find:
-        paths: C:\Reports
-        patterns: "InactiveUsers_*.csv"
-      register: found_csv_files
-
-    - name: If CSV not found, look for TXT report
-      ansible.windows.win_find:
-        paths: C:\Reports
-        patterns: "InactiveUsers_*.txt"
-      when: found_csv_files.matched == 0
-      register: found_txt_files
-
-    - name: Set report file path fact
-      set_fact:
-        report_path: >-
-          {{
-            (found_csv_files.files[0].path if found_csv_files.matched > 0 else
-             (found_txt_files.files[0].path if found_txt_files.matched > 0 else None))
-          }}
-
-    - name: Fail if no report file found
-      fail:
-        msg: "No inactive users report file was found on {{ inventory_hostname }}"
-      when: report_path is none
-
-    - name: Fetch the inactive users report to control machine
-      ansible.windows.win_fetch:
-        src: "{{ report_path }}"
-        dest: "./reports/{{ inventory_hostname }}/"
-        flat: yes
