@@ -1,15 +1,17 @@
-- name: Backup all GPOs on Domain Controller
+---
+- name: Backup all GPOs on Domain Controllers
   hosts: windows_servers
-  gather_facts: yes   # enable this to get ansible_date_time
+  gather_facts: yes
   tasks:
     - name: Create backup folder if not exists
       ansible.windows.win_file:
-        path: 'C:\GPO_Backups\{{ ansible_date_time.date }}'
+        path: "C:\\GPO_Backups\\{{ ansible_date_time.date }}"
         state: directory
 
     - name: Backup all GPOs to folder
       ansible.windows.win_shell: |
         $backupPath = "C:\GPO_Backups\{{ ansible_date_time.date }}"
+        Import-Module GroupPolicy
         Backup-GPO -All -Path $backupPath
       args:
         executable: powershell.exe
