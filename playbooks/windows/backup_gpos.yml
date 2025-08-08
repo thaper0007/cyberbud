@@ -1,6 +1,6 @@
 - name: Backup all GPOs on Domain Controller
-  hosts: windows_servers
-  gather_facts: no
+  hosts: domain_controllers
+  gather_facts: yes   # enable this to get ansible_date_time
   tasks:
     - name: Create backup folder if not exists
       ansible.windows.win_file:
