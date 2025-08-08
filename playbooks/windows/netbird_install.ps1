@@ -1,78 +1,78 @@
 # ==============================================================================
-# NetBird Installation and Automated Login Script
-# This script installs NetBird on a Windows machine, then logs in automatically
-# using a setup key. It's designed to be executed via Ansible's win_shell module.
-#
-# Prerequisites:
-# - The NetBird installer file (.msi) must be available on the target machine.
-# - The NetBird management service URL and a valid setup key are required.
+# NetBird Installation & Auto Login Script (GitHub Download Version)
 # ==============================================================================
 
 # --- Configuration Variables ---
-# Define your NetBird installer path, setup key, and management URL here.
-# These variables can be passed as Ansible variables.
+$setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"  # Replace with your setup key
+$managementUrl = "https://netbird.cyberbud.ca:443" # Optional
+$tempPath = "C:\Temp"
+$installerFile = "$tempPath\netbird-latest.msi"
+$netbirdExe = "C:\Program Files\NetBird\netbird.exe"
 
-$installerPath = "C:\Temp\netbird-ui-windows_0.53.0_windows_amd64.msi"
-$setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"  # Replace with your actual setup key
-$managementUrl = "https://netbird.cyberbud.ca:443" # Replace with your management URL, or omit for NetBird Cloud
-
-# --- Step 1: Install NetBird ---
-Write-Host "Starting NetBird installation..."
-
-# The 'msiexec' command is used for installing MSI packages.
-# /i: Specifies the installation option.
-# /qn: Specifies the quiet mode, with no user interface.
-# /L*v: A log file option for detailed logging, useful for debugging.
-# C:\Temp\netbird_install.log: The path for the installation log file.
-try {
-    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$installerPath`" /qn /L*v C:\Temp\netbird_install.log"
-    Write-Host "NetBird installation completed successfully."
-}
-catch {
-    Write-Error "NetBird installation failed. Error: $_"
-    exit 1 # Exit with a non-zero code to indicate failure
+# --- Step 1: Ensure Temp Directory ---
+if (-Not (Test-Path $tempPath)) {
+    New-Item -ItemType Directory -Path $tempPath | Out-Null
 }
 
-# --- Step 2: Automatic Login with Setup Key ---
-Write-Host "Starting NetBird automatic login..."
-
-$netbirdExecutablePath = "C:\Program Files\NetBird\netbird.exe"
-
+# --- Step 2: Download Latest MSI from GitHub ---
+Write-Host "Fetching latest NetBird release URL from GitHub..."
 try {
-    # Define the arguments as an array of strings
-    $arguments = @("up", "--setup-key", $setupKey)
-
-    # Add the management URL argument only if it exists
-    if ($managementUrl) {
-        $arguments += "--management-url"
-        $arguments += $managementUrl
+    $latestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/netbirdio/netbird/releases/latest" -UseBasicParsing
+    $asset = $latestRelease.assets | Where-Object { $_.name -match "windows_amd64\.msi$" } | Select-Object -First 1
+    if (-not $asset) {
+        throw "No MSI asset found in latest release."
     }
+    $downloadUrl = $asset.browser_download_url
+    Write-Host "Downloading from $downloadUrl..."
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $installerFile
+    Write-Host "Downloaded installer to $installerFile"
+} catch {
+    Write-Error "Failed to download NetBird installer: $_"
+    exit 1
+}
 
-    # Execute the command using Start-Process, passing the arguments separately
-    Start-Process -FilePath $netbirdExecutablePath -ArgumentList $arguments -Wait -NoNewWindow
-    Write-Host "NetBird client should now be connected."
-    
-    # Check the exit code of the last process
+# --- Step 3: Install NetBird ---
+Write-Host "Installing NetBird..."
+try {
+    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$installerFile`" /qn /L*v $tempPath\netbird_install.log"
+    Write-Host "Installation completed successfully."
+} catch {
+    Write-Error "Installation failed: $_"
+    exit 1
+}
+
+# --- Step 4: Login to NetBird ---
+if (-Not (Test-Path $netbirdExe)) {
+    Write-Error "NetBird executable not found at $netbirdExe"
+    exit 1
+}
+
+Write-Host "Logging into NetBird..."
+$arguments = @("up", "--setup-key", $setupKey)
+if ($managementUrl) {
+    $arguments += "--management-url"
+    $arguments += $managementUrl
+}
+
+try {
+    Start-Process -FilePath $netbirdExe -ArgumentList $arguments -Wait -NoNewWindow
     if ($LASTEXITCODE -ne 0) {
-        throw "NetBird login command returned a non-zero exit code: $LASTEXITCODE"
+        throw "NetBird login failed with exit code $LASTEXITCODE"
     }
-}
-catch {
-    Write-Error "NetBird login failed. Error: $_"
+    Write-Host "NetBird client connected successfully."
+} catch {
+    Write-Error $_
     exit 1
 }
 
-# --- Step 3: Verify Status (Optional) ---
+# --- Step 5: Verify Status ---
 Write-Host "Checking NetBird status..."
-
 try {
-    $statusOutput = netbird status
-    Write-Host "NetBird Status:"
-    $statusOutput | Write-Host
-}
-catch {
-    Write-Error "Failed to get NetBird status. Error: $_"
+    $status = & $netbirdExe status
+    Write-Host "NetBird Status:`n$status"
+} catch {
+    Write-Error "Failed to get NetBird status: $_"
     exit 1
 }
 
-Write-Host "Script finished."
+Write-Host "Script finished successfully."
