@@ -5,7 +5,7 @@
   tasks:
     - name: Get inactive AD users (no logon in 90+ days)
       ansible.windows.win_shell: |
-        $daysInactive = 90
+        $daysInactive = 2
         $dateLimit = (Get-Date).AddDays(-$daysInactive)
         $inactiveUsers = Get-ADUser -Filter {LastLogonDate -lt $dateLimit -and Enabled -eq $true} -Properties LastLogonDate |
                          Select-Object Name, SamAccountName, LastLogonDate
