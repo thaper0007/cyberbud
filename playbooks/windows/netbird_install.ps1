@@ -1,5 +1,5 @@
 # ==============================================================================
-# NetBird Installation & Auto Login Script (GitHub Download Version - Safe Exit)
+# NetBird Installation & Auto Login Script (GitHub Download Version - Tray + Autostart)
 # ==============================================================================
 
 # --- Configuration Variables ---
@@ -8,6 +8,7 @@ $managementUrl = "https://netbird.cyberbud.ca:443" # Optional
 $tempPath = "C:\Temp"
 $installerFile = "$tempPath\netbird-latest.msi"
 $netbirdExe = "C:\Program Files\NetBird\netbird.exe"
+$netbirdUI = "C:\Program Files\NetBird\netbird-ui.exe"
 
 # --- Step 1: Ensure Temp Directory ---
 if (-Not (Test-Path $tempPath)) {
@@ -84,13 +85,29 @@ try {
     exit 1
 }
 
-Write-Host "Script finished successfully."
-
-# --- Step 6: Launch NetBird UI (System Tray) ---
-$netbirdUI = "C:\Program Files\NetBird\netbird-ui.exe"
+# --- Step 6: Launch NetBird UI (Tray) ---
 if (Test-Path $netbirdUI) {
     Write-Host "Starting NetBird UI in system tray..."
     Start-Process -FilePath $netbirdUI -WindowStyle Hidden
 } else {
     Write-Host "NetBird UI executable not found, skipping tray startup."
 }
+
+# --- Step 7: Set NetBird UI to Auto-Start for All Users ---
+try {
+    $startupFolder = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+    $shortcutPath = Join-Path $startupFolder "NetBird.lnk"
+    if (Test-Path $netbirdUI) {
+        $wsh = New-Object -ComObject WScript.Shell
+        $shortcut = $wsh.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $netbirdUI
+        $shortcut.Save()
+        Write-Host "NetBird UI will now auto-launch for all users on login."
+    } else {
+        Write-Host "NetBird UI executable not found, skipping auto-start setup."
+    }
+} catch {
+    Write-Error "Failed to set NetBird UI autostart: $_"
+}
+
+Write-Host "Script finished successfully."
