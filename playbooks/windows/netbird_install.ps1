@@ -1,5 +1,5 @@
 # ==============================================================================
-# NetBird Installation & Auto Login Script (GitHub Download Version)
+# NetBird Installation & Auto Login Script (GitHub Download Version - Safe Exit)
 # ==============================================================================
 
 # --- Configuration Variables ---
@@ -56,10 +56,19 @@ if ($managementUrl) {
 
 try {
     Start-Process -FilePath $netbirdExe -ArgumentList $arguments -Wait -NoNewWindow
-    if ($LASTEXITCODE -ne 0) {
-        throw "NetBird login failed with exit code $LASTEXITCODE"
+    $exitCode = $LASTEXITCODE
+
+    # If exit code is non-zero, check status before failing
+    if ($exitCode -ne 0) {
+        $statusCheck = & $netbirdExe status
+        if ($statusCheck -match "Connected") {
+            Write-Host "NetBird is already connected. Ignoring non-zero exit code ($exitCode)."
+        } else {
+            throw "NetBird login failed with exit code $exitCode"
+        }
+    } else {
+        Write-Host "NetBird client connected successfully."
     }
-    Write-Host "NetBird client connected successfully."
 } catch {
     Write-Error $_
     exit 1
