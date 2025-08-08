@@ -1,6 +1,6 @@
 ---
-- name: Run Windows Updates on srv-home
-  hosts: srv-home
+- name: Run Windows Updates on DCs
+  hosts: windows_servers
   tasks:
     - name: Install Windows Updates
       ansible.windows.win_updates:
