@@ -1,0 +1,24 @@
+---
+- name: Generate report of inactive users (90+ days)
+  hosts: windows_servers
+  gather_facts: no
+  tasks:
+    - name: Get inactive AD users (no logon in 90+ days)
+      ansible.windows.win_shell: |
+        $daysInactive = 90
+        $dateLimit = (Get-Date).AddDays(-$daysInactive)
+        $inactiveUsers = Get-ADUser -Filter {LastLogonDate -lt $dateLimit -and Enabled -eq $true} -Properties LastLogonDate |
+                         Select-Object Name, SamAccountName, LastLogonDate
+        $reportPath = "C:\\Reports\\InactiveUsers_$(Get-Date -Format yyyy-MM-dd).csv"
+        if (-not (Test-Path "C:\\Reports")) {
+          New-Item -Path "C:\\Reports" -ItemType Directory | Out-Null
+        }
+        $inactiveUsers | Export-Csv -Path $reportPath -NoTypeInformation
+        Write-Output "Report saved to $reportPath"
+      args:
+        executable: powershell.exe
+      register: inactive_users_report
+
+    - name: Show report location
+      debug:
+        msg: "{{ inactive_users_report.stdout }}"
