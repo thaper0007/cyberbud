@@ -85,3 +85,12 @@ try {
 }
 
 Write-Host "Script finished successfully."
+
+# --- Step 6: Launch NetBird UI (System Tray) ---
+$netbirdUI = "C:\Program Files\NetBird\netbird-ui.exe"
+if (Test-Path $netbirdUI) {
+    Write-Host "Starting NetBird UI in system tray..."
+    Start-Process -FilePath $netbirdUI -WindowStyle Hidden
+} else {
+    Write-Host "NetBird UI executable not found, skipping tray startup."
+}
