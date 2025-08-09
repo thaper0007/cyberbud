@@ -1,6 +1,6 @@
 ---
 - name: Deploy BGInfo files to NETLOGON and create User Logon GPO
-  hosts: dc_servers
+  hosts: windows_servers
   gather_facts: no
   vars:
     bginfo_url:    "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
