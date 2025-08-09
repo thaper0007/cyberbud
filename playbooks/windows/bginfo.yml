@@ -2,13 +2,13 @@
 - name: Deploy BGInfo files to NETLOGON and create User Logon GPO (srv-work only)
   hosts: srv-work
   gather_facts: yes
-
   vars:
+    domain_dns: "work.local"
     bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\scripts\\bginfo"
     bginfo_url: "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
     bg_config_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hib8pf9i&dl=1"
     wallpaper_url: "https://www.dropbox.com/scl/fi/n2y8fx1r2m95zciwpuutk/wallpaper.jpg?rlkey=7zuuqyfsmgwin05xvjkyzaaq2&st=l1lservo&dl=1"
-    apply_bat_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/apply_bgi.bat?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hhkprurr&dl=1"
+    apply_bat_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hhkprurr&dl=1"
     gpo_name: "User Logon BGInfo"
 
   tasks:
@@ -45,7 +45,7 @@
         force: yes
         validate_certs: no
 
-    - name: Create or get GPO named {{ gpo_name }}
+    - name: Create or get GPO named "{{ gpo_name }}"
       ansible.windows.win_shell: |
         Import-Module GroupPolicy
         $gpo = Get-GPO -Name "{{ gpo_name }}" -ErrorAction SilentlyContinue
@@ -56,62 +56,64 @@
       args:
         executable: powershell.exe
       register: gpo_guid_result
-      changed_when: false
 
     - name: Set GPO GUID fact
       set_fact:
         gpo_guid: "{{ gpo_guid_result.stdout }}"
 
-    - name: Create User Scripts Startup folder in GPO and copy apply_bgi.bat
+    - name: Create User Scripts Logon folder in GPO and copy apply_bgi.bat
       ansible.windows.win_shell: |
-        $domain = "work.local"
+        $domain = "{{ domain_dns }}"
         $gpoGuid = "{{ gpo_guid }}"
         $gpoPath = Join-Path -Path "C:\Windows\SYSVOL\sysvol" -ChildPath $domain
-        $polPath = Join-Path $gpoPath ("Policies\{{$gpoGuid}}")
-        $startupFolder = Join-Path $polPath "User\Scripts\Logon"
+        $polPath = Join-Path $gpoPath ("Policies\$gpoGuid")
+        $logonFolder = Join-Path $polPath "User\Scripts\Logon"
 
-        if (-not (Test-Path $startupFolder)) {
-          New-Item -Path $startupFolder -ItemType Directory -Force | Out-Null
+        try {
+          if (-not (Test-Path $logonFolder)) {
+            New-Item -Path $logonFolder -ItemType Directory -Force | Out-Null
+          }
+
+          $sourceFile = Join-Path "{{ bginfo_dir }}" "apply_bgi.bat"
+          Copy-Item -Path $sourceFile -Destination (Join-Path $logonFolder "apply_bgi.bat") -Force
+
+          # Create scripts.ini for User Logon script
+          $scriptsIni = Join-Path $logonFolder "scripts.ini"
+          $content = @(
+            "[Logon]",
+            "0CmdLine=apply_bgi.bat",
+            "0Parameters=",
+            "0ScriptDescription=Run BGInfo apply script"
+          )
+          $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
+
+          Write-Output "User Logon script deployed and scripts.ini created at $scriptsIni"
+        } catch {
+          Write-Error "Error in GPO scripts setup: $_"
+          exit 1
         }
-
-        $sourceFile = Join-Path "{{ bginfo_dir }}" "apply_bgi.bat"
-        Copy-Item -Path $sourceFile -Destination (Join-Path $startupFolder "apply_bgi.bat") -Force
-
-        # Create scripts.ini to register the logon script
-        $scriptsIni = Join-Path $startupFolder "scripts.ini"
-
-        $content = @()
-        $content += "[Logon]"
-        $content += "0CmdLine=apply_bgi.bat"
-        $content += "0Parameters="
-        $content += "0ScriptDescription=Run BGInfo apply script"
-        $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
-
-        Write-Output "Logon script deployed and scripts.ini created at $scriptsIni"
       args:
         executable: powershell.exe
 
-    - name: Link the GPO to the domain root
+    - name: Link the GPO to domain root
       ansible.windows.win_shell: |
         Import-Module GroupPolicy
         $gpoName = "{{ gpo_name }}"
         $domainDN = (Get-ADDomain).DistinguishedName
-        $existingLinks = Get-GPLink -Domain (Get-ADDomain).DNSRoot -ErrorAction SilentlyContinue
-        $linkExists = $existingLinks | Where-Object { $_.DisplayName -eq $gpoName -and $_.Target -eq $domainDN }
-        if (-not $linkExists) {
+        $existing = Get-GPLink -Domain (Get-ADDomain).DNSRoot -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $gpoName -and $_.Target -eq $domainDN }
+        if (-not $existing) {
           New-GPLink -Name $gpoName -Target $domainDN -LinkEnabled Yes -Enforced No
-          Write-Output "GPO linked to domain $domainDN"
-        }
-        else {
-          Write-Output "GPO already linked to domain $domainDN"
+          Write-Output "GPO linked to $domainDN"
+        } else {
+          Write-Output "GPO already linked to $domainDN"
         }
       args:
         executable: powershell.exe
 
-    - name: Summary
+    - name: Show summary
       ansible.builtin.debug:
         msg:
           - "BGInfo files deployed to: {{ bginfo_dir }}"
-          - "GPO created/used: {{ gpo_name }}"
+          - "GPO Name: {{ gpo_name }}"
           - "GPO GUID: {{ gpo_guid }}"
 
