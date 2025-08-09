@@ -1,6 +1,6 @@
 ---
 - name: Deploy BGInfo files and configure User Logon GPO (srv-work only)
-  hosts: windows_servers
+  hosts: srv-work
   gather_facts: yes
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
