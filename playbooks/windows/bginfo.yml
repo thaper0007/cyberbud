@@ -1,19 +1,7 @@
 ---
-- name: Deploy BGInfo files and configure GPO for all users
+- name: Deploy BGInfo files and configure User Logon GPO (srv-work only)
   hosts: srv-work
   gather_facts: yes
-
-  pre_tasks:
-    - name: Ensure community.windows collection is installed
-      ansible.builtin.command:
-        cmd: >
-          ansible-galaxy collection install community.windows --force
-      changed_when: false
-      check_mode: no
-
-  collections:
-    - community.windows
-
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
       win_file:
@@ -44,21 +32,26 @@
         dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\apply_bgi.bat
         validate_certs: no
 
-    - name: Create GPO named 'BGInfo'
-      community.windows.win_gpo:
-        name: "BGInfo"
-        state: present
-
-    - name: Link 'BGInfo' GPO to the domain root
-      community.windows.win_gpo_link:
-        name: "BGInfo"
-        state: present
-        ou: "DC=work,DC=local"
-
-    - name: Configure logon script in 'BGInfo' GPO
+    - name: Create or get GPO named 'User Logon BGInfo' and set User Logon Script
       win_shell: |
         Import-Module GroupPolicy
-        $GpoName = "BGInfo"
-        $ScriptName = "apply_bgi.bat"
-        $ScriptPath = "\\work.local\scripts\bginfo"
-        Set-GPLogonScript -Name $GpoName -ScriptName $ScriptName -ScriptPath $ScriptPath
+
+        $GpoName = "User Logon BGInfo"
+        $gpo = Get-GPO -Name $GpoName -ErrorAction SilentlyContinue
+        if (-not $gpo) {
+          $gpo = New-GPO -Name $GpoName
+        }
+
+        # Set the logon script path (UNC)
+        $scriptPath = "\\work.local\scripts\bginfo\apply_bgi.bat"
+
+        # Remove existing logon scripts to avoid duplicates
+        $existingScripts = Get-GPLogonScript -Name $GpoName -ErrorAction SilentlyContinue
+        if ($existingScripts) {
+          Remove-GPLogonScript -Name $GpoName -ScriptName $scriptPath -ErrorAction SilentlyContinue
+        }
+
+        # Add new logon script
+        Set-GPLogonScript -Name $GpoName -ScriptPath $scriptPath
+      args:
+        executable: powershell.exe
