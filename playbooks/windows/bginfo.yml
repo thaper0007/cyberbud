@@ -3,7 +3,7 @@
   hosts: srv-work
   gather_facts: no
   vars:
-    bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\bginfo"
+    bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\scripts\\bginfo"
 
     bginfo_url:    "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
     bg_config_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hib8pf9i&dl=1"
@@ -21,15 +21,6 @@
 
     - name: Pause 5 seconds to ensure folder creation completes
       ansible.windows.win_shell: Start-Sleep -Seconds 5
-
-    - name: Verify NETLOGON bginfo folder exists
-      ansible.windows.win_stat:
-        path: "{{ bginfo_dir }}"
-      register: folder_stat
-
-    - name: Show folder stat info
-      ansible.builtin.debug:
-        var: folder_stat
 
     - name: Download BGInfo.exe into NETLOGON bginfo
       ansible.windows.win_get_url:
@@ -87,19 +78,18 @@
           New-Item -Path $startupFolder -ItemType Directory -Force | Out-Null
         }
 
-        # Copy the apply script from NETLOGON into the GPO User Scripts Startup folder
-        $sourceFile = Join-Path $domain "$($env:COMPUTERNAME)\NETLOGON\bginfo\apply_bgi.bat"
+        # Copy apply_bgi.bat from scripts\bginfo folder into GPO User Scripts Startup folder
+        $sourceFile = Join-Path $gpoPath "scripts\bginfo\apply_bgi.bat"
         if (-not (Test-Path $sourceFile)) {
-          # fallback to SYSVOL path
-          $sourceFile = Join-Path $gpoPath "bginfo\apply_bgi.bat"
+          Write-Error "Source script $sourceFile not found"
+          exit 2
         }
-
         Copy-Item -Path $sourceFile -Destination (Join-Path $startupFolder "apply_bgi.bat") -Force
 
         # Also copy other BGInfo files into the GPO Scripts folder for completeness
-        Copy-Item -Path (Join-Path $gpoPath "bginfo\BGInfo.exe") -Destination (Join-Path $startupFolder "BGInfo.exe") -Force
-        Copy-Item -Path (Join-Path $gpoPath "bginfo\bg_config.bgi") -Destination (Join-Path $startupFolder "bg_config.bgi") -Force
-        Copy-Item -Path (Join-Path $gpoPath "bginfo\wallpaper.jpg") -Destination (Join-Path $startupFolder "wallpaper.jpg") -Force
+        Copy-Item -Path (Join-Path $gpoPath "scripts\bginfo\BGInfo.exe") -Destination (Join-Path $startupFolder "BGInfo.exe") -Force
+        Copy-Item -Path (Join-Path $gpoPath "scripts\bginfo\bg_config.bgi") -Destination (Join-Path $startupFolder "bg_config.bgi") -Force
+        Copy-Item -Path (Join-Path $gpoPath "scripts\bginfo\wallpaper.jpg") -Destination (Join-Path $startupFolder "wallpaper.jpg") -Force
 
         # Create scripts.ini for user startup script
         $scriptsIni = Join-Path $polPath "User\Scripts\Startup\scripts.ini"
