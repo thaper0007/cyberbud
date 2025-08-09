@@ -53,7 +53,7 @@
         $scriptPath = "\\work.local\scripts\bginfo\apply_bgi.bat"
 
         # Prepare logon scripts folder path
-        $logonScriptPath = "$env:SystemRoot\SYSVOL\sysvol\work.local\Policies\$($gpo.Id)\User\Scripts\Logon"
+        $logonScriptPath = Join-Path $env:SystemRoot ("SYSVOL\sysvol\work.local\Policies\$($gpo.Id)\User\Scripts\Logon")
         if (-not (Test-Path $logonScriptPath)) {
           New-Item -ItemType Directory -Path $logonScriptPath -Force | Out-Null
         }
