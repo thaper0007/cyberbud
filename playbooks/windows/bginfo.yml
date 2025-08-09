@@ -2,6 +2,15 @@
 - name: Deploy BGInfo files and configure GPO for all users
   hosts: srv-work
   gather_facts: yes
+
+  pre_tasks:
+    - name: Ensure community.windows collection is installed
+      ansible.builtin.command:
+        cmd: >
+          ansible-galaxy collection install community.windows --force
+      changed_when: false
+      check_mode: no
+
   collections:
     - community.windows
 
@@ -39,14 +48,12 @@
       community.windows.win_gpo:
         name: "BGInfo"
         state: present
-      become: yes
 
     - name: Link 'BGInfo' GPO to the domain root
       community.windows.win_gpo_link:
         name: "BGInfo"
         state: present
         ou: "DC=work,DC=local"
-      become: yes
 
     - name: Configure logon script in 'BGInfo' GPO
       win_shell: |
@@ -55,4 +62,3 @@
         $ScriptName = "apply_bgi.bat"
         $ScriptPath = "\\work.local\scripts\bginfo"
         Set-GPLogonScript -Name $GpoName -ScriptName $ScriptName -ScriptPath $ScriptPath
-      become: yes
