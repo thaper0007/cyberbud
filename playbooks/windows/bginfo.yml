@@ -1,36 +1,24 @@
 ---
-- name: Deploy BGInfo files to NETLOGON and create User Logon GPO
-  hosts: windows_servers
+- name: Deploy BGInfo files to NETLOGON and create User Logon GPO (run on srv-work only)
+  hosts: srv-work
   gather_facts: no
-
   vars:
+    # Hardcode your domain info here:
+    domain_dns: "work.local"          # Change to your real domain DNS name
+    domain_dn: "DC=work,DC=local"    # Change to your real domain DN
+
+    # URLs for BGInfo files (dropbox direct download)
     bginfo_url:    "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
     bg_config_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hib8pf9i&dl=1"
     wallpaper_url: "https://www.dropbox.com/scl/fi/n2y8fx1r2m95zciwpuutk/wallpaper.jpg?rlkey=7zuuqyfsmgwin05xvjkyzaaq2&st=l1lservo&dl=1"
     apply_bat_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hhkprurr&dl=1"
+
     bginfo_dir_name: "bginfo"
     gpo_name: "BGInfo"
-    gpo_link_target: ""  # Leave empty for domain root
+    gpo_link_target: "{{ domain_dn }}"   # Link to domain root, or set to OU DN if you want
 
   tasks:
-    - name: Get AD domain DNS and DN (run once on DC)
-      ansible.windows.win_shell: |
-        Import-Module ActiveDirectory
-        $domainDns = (Get-ADDomain).DNSRoot
-        $domainDN  = (Get-ADDomain).DistinguishedName
-        Write-Output "$domainDns|$domainDN"
-      register: domain_info
-      run_once: yes
-      delegate_to: srv-home
-      args:
-        executable: powershell.exe
-
-    - name: Set domain facts
-      set_fact:
-        domain_dns: "{{ domain_info.stdout.split('|')[0] }}"
-        domain_dn: "{{ domain_info.stdout.split('|')[1] }}"
-
-    - name: Ensure NETLOGON bginfo folder exists (SYSVOL path)
+    - name: Ensure NETLOGON bginfo folder exists
       ansible.windows.win_file:
         path: "C:\\Windows\\SYSVOL\\sysvol\\{{ domain_dns }}\\{{ bginfo_dir_name }}"
         state: directory
@@ -79,35 +67,38 @@
       set_fact:
         gpo_guid: "{{ gpo_guid_result.stdout }}"
 
-    - name: Create GPO User Logon Scripts folder and copy apply_bgi.bat
+    - name: Create GPO User Scripts Startup folder and copy startup script
       ansible.windows.win_shell: |
         $domain = "{{ domain_dns }}"
         $gpoGuid = "{{ gpo_guid }}"
-        $sysvolPath = "C:\Windows\SYSVOL\sysvol\$domain"
-        $gpoPath = Join-Path $sysvolPath ("Policies\{{$gpoGuid}}")
-        $logonScriptsPath = Join-Path $gpoPath "User\Scripts\Logon"
+        $gpoPath = Join-Path -Path "C:\Windows\SYSVOL\sysvol" -ChildPath $domain
+        $polPath = Join-Path $gpoPath ("Policies\{{$gpoGuid}}")
+        $startupFolder = Join-Path $polPath "User\Scripts\Startup"
 
-        if (-not (Test-Path $logonScriptsPath)) {
-          New-Item -Path $logonScriptsPath -ItemType Directory -Force | Out-Null
+        if (-not (Test-Path $startupFolder)) {
+          New-Item -Path $startupFolder -ItemType Directory -Force | Out-Null
         }
 
-        $sourceDir = Join-Path $sysvolPath "{{ bginfo_dir_name }}"
-        $filesToCopy = @("apply_bgi.bat", "BGInfo.exe", "bg_config.bgi", "wallpaper.jpg")
+        # Copy apply_bgi.bat from NETLOGON to GPO User Scripts Startup folder
+        $sourceFile = Join-Path $gpoPath "{{ bginfo_dir_name }}\apply_bgi.bat"
+        Copy-Item -Path $sourceFile -Destination (Join-Path $startupFolder "apply_bgi.bat") -Force
 
-        foreach ($file in $filesToCopy) {
-          Copy-Item -Path (Join-Path $sourceDir $file) -Destination (Join-Path $logonScriptsPath $file) -Force
-        }
+        # Copy BGInfo files also to this folder
+        Copy-Item -Path (Join-Path $gpoPath "{{ bginfo_dir_name }}\BGInfo.exe") -Destination (Join-Path $startupFolder "BGInfo.exe") -Force
+        Copy-Item -Path (Join-Path $gpoPath "{{ bginfo_dir_name }}\bg_config.bgi") -Destination (Join-Path $startupFolder "bg_config.bgi") -Force
+        Copy-Item -Path (Join-Path $gpoPath "{{ bginfo_dir_name }}\wallpaper.jpg") -Destination (Join-Path $startupFolder "wallpaper.jpg") -Force
 
-        # Create scripts.ini with apply_bgi.bat registered as logon script
-        $scriptsIni = Join-Path $logonScriptsPath "scripts.ini"
-        $content = @()
-        $content += "[Logon]"
-        $content += "0CmdLine=apply_bgi.bat"
-        $content += "0Parameters="
-        $content += "0ScriptDescription=Run BGInfo apply script"
+        # Create scripts.ini to register the startup script
+        $scriptsIni = Join-Path $startupFolder "scripts.ini"
+        $content = @(
+          "[Startup]"
+          "0CmdLine=apply_bgi.bat"
+          "0Parameters="
+          "0ScriptDescription=Run BGInfo apply script"
+        )
         $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
 
-        Write-Output "User Logon script apply_bgi.bat configured in GPO"
+        Write-Output "User Startup script configured at $startupFolder"
       args:
         executable: powershell.exe
       register: gpo_script_setup
@@ -120,10 +111,8 @@
         if ([string]::IsNullOrWhiteSpace($linkTarget)) {
           $linkTarget = (Get-ADDomain).DistinguishedName
         }
-
-        $existingLink = Get-GPLink -Target $linkTarget -ErrorAction SilentlyContinue | Where-Object { $_.GPOName -eq $gpoName }
-
-        if (-not $existingLink) {
+        $existingLinks = Get-GPLink -Domain (Get-ADDomain).DNSRoot | Where-Object { $_.DisplayName -eq $gpoName -and $_.Target -eq $linkTarget }
+        if (-not $existingLinks) {
           New-GPLink -Name $gpoName -Target $linkTarget -LinkEnabled Yes -Enforced No
           Write-Output "GPO linked to $linkTarget"
         } else {
