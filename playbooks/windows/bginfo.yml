@@ -3,15 +3,10 @@
   hosts: srv-work
   gather_facts: yes
   vars:
-    domain_dns: "work.local"
+    domain_dns: work.local
     bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\scripts\\bginfo"
-    bginfo_url: "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
-    bg_config_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hib8pf9i&dl=1"
-    wallpaper_url: "https://www.dropbox.com/scl/fi/n2y8fx1r2m95zciwpuutk/wallpaper.jpg?rlkey=7zuuqyfsmgwin05xvjkyzaaq2&st=l1lservo&dl=1"
-    apply_bat_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hhkprurr&dl=1"
-    gpo_name: "User Logon BGInfo"
-
   tasks:
+
     - name: Ensure NETLOGON bginfo folder exists
       ansible.windows.win_file:
         path: "{{ bginfo_dir }}"
@@ -19,47 +14,42 @@
 
     - name: Download BGInfo.exe into NETLOGON bginfo
       ansible.windows.win_get_url:
-        url: "{{ bginfo_url }}"
+        url: "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
         dest: "{{ bginfo_dir }}\\BGInfo.exe"
         force: yes
-        validate_certs: no
 
     - name: Download bg_config.bgi into NETLOGON bginfo
       ansible.windows.win_get_url:
-        url: "{{ bg_config_url }}"
+        url: "https://www.dropbox.com/scl/fi/oi5s2ztn3kmhvyjb84n20/bg_config.bgi?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9knl1&dl=1"
         dest: "{{ bginfo_dir }}\\bg_config.bgi"
         force: yes
-        validate_certs: no
 
     - name: Download wallpaper.jpg into NETLOGON bginfo
       ansible.windows.win_get_url:
-        url: "{{ wallpaper_url }}"
+        url: "https://www.dropbox.com/scl/fi/0rvz3bbo4f8tufr0i91fs/wallpaper.jpg?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kszj&dl=1"
         dest: "{{ bginfo_dir }}\\wallpaper.jpg"
         force: yes
-        validate_certs: no
 
     - name: Download apply_bgi.bat into NETLOGON bginfo
       ansible.windows.win_get_url:
-        url: "{{ apply_bat_url }}"
+        url: "https://www.dropbox.com/scl/fi/8x12ka1y5epf3gt6zrjsx/apply_bgi.bat?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kthq&dl=1"
         dest: "{{ bginfo_dir }}\\apply_bgi.bat"
         force: yes
-        validate_certs: no
 
-    - name: Create or get GPO named "{{ gpo_name }}"
+    - name: Create or get GPO named "User Logon BGInfo"
       ansible.windows.win_shell: |
+        $gpoName = "User Logon BGInfo"
         Import-Module GroupPolicy
-        $gpo = Get-GPO -Name "{{ gpo_name }}" -ErrorAction SilentlyContinue
+        $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
         if (-not $gpo) {
-          $gpo = New-GPO -Name "{{ gpo_name }}"
+          $gpo = New-GPO -Name $gpoName
         }
-        Write-Output $gpo.Id.Guid
-      args:
-        executable: powershell.exe
-      register: gpo_guid_result
+        Write-Output $gpo.Id
+      register: gpo_guid_raw
 
     - name: Set GPO GUID fact
       set_fact:
-        gpo_guid: "{{ gpo_guid_result.stdout }}"
+        gpo_guid: "{{ gpo_guid_raw.stdout }}"
 
     - name: Create User Scripts Logon folder in GPO and copy apply_bgi.bat
       ansible.windows.win_shell: |
@@ -77,14 +67,14 @@
           $sourceFile = Join-Path "{{ bginfo_dir }}" "apply_bgi.bat"
           Copy-Item -Path $sourceFile -Destination (Join-Path $logonFolder "apply_bgi.bat") -Force
 
-          # Create scripts.ini for User Logon script
+          # Create scripts.ini for User Logon script using here-string
           $scriptsIni = Join-Path $logonFolder "scripts.ini"
-          $content = @(
-            "[Logon]",
-            "0CmdLine=apply_bgi.bat",
-            "0Parameters=",
-            "0ScriptDescription=Run BGInfo apply script"
-          )
+          $content = @"
+[Logon]
+0CmdLine=apply_bgi.bat
+0Parameters=
+0ScriptDescription=Run BGInfo apply script
+"@
           $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
 
           Write-Output "User Logon script deployed and scripts.ini created at $scriptsIni"
@@ -94,26 +84,3 @@
         }
       args:
         executable: powershell.exe
-
-    - name: Link the GPO to domain root
-      ansible.windows.win_shell: |
-        Import-Module GroupPolicy
-        $gpoName = "{{ gpo_name }}"
-        $domainDN = (Get-ADDomain).DistinguishedName
-        $existing = Get-GPLink -Domain (Get-ADDomain).DNSRoot -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $gpoName -and $_.Target -eq $domainDN }
-        if (-not $existing) {
-          New-GPLink -Name $gpoName -Target $domainDN -LinkEnabled Yes -Enforced No
-          Write-Output "GPO linked to $domainDN"
-        } else {
-          Write-Output "GPO already linked to $domainDN"
-        }
-      args:
-        executable: powershell.exe
-
-    - name: Show summary
-      ansible.builtin.debug:
-        msg:
-          - "BGInfo files deployed to: {{ bginfo_dir }}"
-          - "GPO Name: {{ gpo_name }}"
-          - "GPO GUID: {{ gpo_guid }}"
-
