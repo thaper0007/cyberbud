@@ -39,32 +39,35 @@
       community.windows.win_gpo:
         name: "BGInfo"
         state: present
+      become: yes
 
     - name: Link 'BGInfo' GPO to the domain root
       community.windows.win_gpo_link:
         name: "BGInfo"
         state: present
         ou: "DC=work,DC=local"
+      become: yes
 
     - name: Configure logon script in 'BGInfo' GPO
       win_shell: |
         Import-Module GroupPolicy
 
         $GpoName = "BGInfo"
-        $gpo = Get-GPO -Name $GpoName
-        $scriptUNC = "\\work.local\scripts\bginfo\apply_bgi.bat"
+        $ScriptName = "apply_bgi.bat"
+        $ScriptPath = "\\work.local\scripts\bginfo"
 
-        # Path to GPO's logon script folder in SYSVOL
-        $gpoLogonPath = "\\work.local\SYSVOL\work.local\Policies\{$($gpo.Id)}\User\Scripts\Logon"
+        Set-GPLogonScript -Name $GpoName -ScriptName $ScriptName -ScriptPath $ScriptPath
+      become: yes
 
-        if (-not (Test-Path $gpoLogonPath)) {
-          New-Item -Path $gpoLogonPath -ItemType Directory -Force
+    - name: Verify if GPO 'BGInfo' exists
+      win_shell: |
+        Import-Module GroupPolicy
+        if (Get-GPO -Name "BGInfo" -ErrorAction SilentlyContinue) {
+          Write-Output "GPO 'BGInfo' exists"
+        } else {
+          Write-Output "GPO 'BGInfo' does NOT exist"
         }
+      register: gpo_check
 
-        # Write Scripts.ini for the logon script
-        $iniFile = Join-Path $gpoLogonPath "Scripts.ini"
-        Set-Content $iniFile "[Logon]" -Force
-        Add-Content $iniFile "0CmdLine=$scriptUNC"
-        Add-Content $iniFile "0Parameters="
-      args:
-        executable: powershell.exe
+    - debug:
+        var: gpo_check.stdout
