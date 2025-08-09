@@ -51,23 +51,8 @@
     - name: Configure logon script in 'BGInfo' GPO
       win_shell: |
         Import-Module GroupPolicy
-
         $GpoName = "BGInfo"
         $ScriptName = "apply_bgi.bat"
         $ScriptPath = "\\work.local\scripts\bginfo"
-
         Set-GPLogonScript -Name $GpoName -ScriptName $ScriptName -ScriptPath $ScriptPath
       become: yes
-
-    - name: Verify if GPO 'BGInfo' exists
-      win_shell: |
-        Import-Module GroupPolicy
-        if (Get-GPO -Name "BGInfo" -ErrorAction SilentlyContinue) {
-          Write-Output "GPO 'BGInfo' exists"
-        } else {
-          Write-Output "GPO 'BGInfo' does NOT exist"
-        }
-      register: gpo_check
-
-    - debug:
-        var: gpo_check.stdout
