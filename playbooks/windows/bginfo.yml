@@ -1,11 +1,12 @@
 ---
-- name: Deploy BGInfo files to NETLOGON and create User Logon GPO (srv-work only)
+- name: Deploy BGInfo files and create User Logon GPO (srv-work only)
   hosts: srv-work
   gather_facts: yes
   vars:
     domain_dns: "work.local"
     bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\scripts\\bginfo"
     gpo_name: "User Logon BGInfo"
+    netlogon_share: "\\\\srv-work\\NETLOGON\\bginfo"
 
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
@@ -51,7 +52,7 @@
       set_fact:
         gpo_guid: "{{ gpo_guid_result.stdout | trim }}"
 
-    - name: Create User Scripts Logon folder in GPO and copy apply_bgi.bat
+    - name: Create User Scripts Logon folder in GPO and copy apply_bgi.bat and scripts.ini
       ansible.windows.win_shell: |
         $domain = "{{ domain_dns }}"
         $gpoGuid = "{{ gpo_guid }}"
@@ -67,7 +68,6 @@
           $sourceFile = Join-Path "{{ bginfo_dir }}" "apply_bgi.bat"
           Copy-Item -Path $sourceFile -Destination (Join-Path $logonFolder "apply_bgi.bat") -Force
 
-          # Create scripts.ini for User Logon script using here-string
           $scriptsIni = Join-Path $logonFolder "scripts.ini"
           $content = @"
 [Logon]
