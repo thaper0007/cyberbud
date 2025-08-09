@@ -3,19 +3,33 @@
   hosts: srv-work
   gather_facts: no
   vars:
-    domain_dns: "work.local"
-    bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\{{ domain_dns }}\\bginfo"
-    bginfo_url: "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
+    bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\bginfo"
+
+    bginfo_url:    "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
     bg_config_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/bg_config.bgi?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hib8pf9i&dl=1"
     wallpaper_url: "https://www.dropbox.com/scl/fi/n2y8fx1r2m95zciwpuutk/wallpaper.jpg?rlkey=7zuuqyfsmgwin05xvjkyzaaq2&st=l1lservo&dl=1"
     apply_bat_url: "https://www.dropbox.com/scl/fi/7ebcio36fvr1zrci8dvwk/apply_bgi.bat?rlkey=8nljr7cg7gpdguc1ckmnqjg9r&st=hhkprurr&dl=1"
-    gpo_name: "BGInfo User Logon"
+
+    gpo_name: "User Logon BGInfo"
+
   tasks:
 
     - name: Ensure NETLOGON bginfo folder exists
       ansible.windows.win_file:
         path: "{{ bginfo_dir }}"
         state: directory
+
+    - name: Pause 5 seconds to ensure folder creation completes
+      ansible.windows.win_shell: Start-Sleep -Seconds 5
+
+    - name: Verify NETLOGON bginfo folder exists
+      ansible.windows.win_stat:
+        path: "{{ bginfo_dir }}"
+      register: folder_stat
+
+    - name: Show folder stat info
+      ansible.builtin.debug:
+        var: folder_stat
 
     - name: Download BGInfo.exe into NETLOGON bginfo
       ansible.windows.win_get_url:
@@ -45,8 +59,6 @@
         force: yes
         validate_certs: no
 
-    # Optional: create GPO and configure user startup script pointing to apply_bgi.bat in NETLOGON
-    # (This requires ActiveDirectory and GroupPolicy modules on the host and rights to create GPOs)
     - name: Create or get GPO named {{ gpo_name }}
       ansible.windows.win_shell: |
         Import-Module GroupPolicy
@@ -57,39 +69,72 @@
         Write-Output $gpo.Id.Guid
       args:
         executable: powershell.exe
-      register: gpo_guid
+      register: gpo_guid_result
 
     - name: Set GPO GUID fact
       set_fact:
-        gpo_guid: "{{ gpo_guid.stdout }}"
+        gpo_guid: "{{ gpo_guid_result.stdout }}"
 
-    - name: Create user startup scripts folder and copy apply_bgi.bat
+    - name: Create GPO User\Scripts\Startup folder and copy startup script
       ansible.windows.win_shell: |
-        $gpoPath = "C:\Windows\SYSVOL\sysvol\{{ domain_dns }}\Policies\{{$env:GPO_GUID}}"
-        $scriptsPath = Join-Path $gpoPath "User\Scripts\Logon"
-        if (-not (Test-Path $scriptsPath)) {
-          New-Item -Path $scriptsPath -ItemType Directory -Force | Out-Null
-        }
-        Copy-Item -Path "{{ bginfo_dir }}\apply_bgi.bat" -Destination (Join-Path $scriptsPath "apply_bgi.bat") -Force
+        $domain = "work.local"
+        $gpoGuid = "{{ gpo_guid }}"
+        $gpoPath = Join-Path -Path "C:\Windows\SYSVOL\sysvol" -ChildPath $domain
+        $polPath = Join-Path $gpoPath ("Policies\{{$gpoGuid}}")
+        $startupFolder = Join-Path $polPath "User\Scripts\Startup"
 
-        $scriptsIni = Join-Path $scriptsPath "scripts.ini"
-        $content = @(
-          "[Logon]"
-          "0CmdLine=apply_bgi.bat"
-          "0Parameters="
-          "0ScriptDescription=Run BGInfo Apply Script"
-        )
+        if (-not (Test-Path $startupFolder)) {
+          New-Item -Path $startupFolder -ItemType Directory -Force | Out-Null
+        }
+
+        # Copy the apply script from NETLOGON into the GPO User Scripts Startup folder
+        $sourceFile = Join-Path $domain "$($env:COMPUTERNAME)\NETLOGON\bginfo\apply_bgi.bat"
+        if (-not (Test-Path $sourceFile)) {
+          # fallback to SYSVOL path
+          $sourceFile = Join-Path $gpoPath "bginfo\apply_bgi.bat"
+        }
+
+        Copy-Item -Path $sourceFile -Destination (Join-Path $startupFolder "apply_bgi.bat") -Force
+
+        # Also copy other BGInfo files into the GPO Scripts folder for completeness
+        Copy-Item -Path (Join-Path $gpoPath "bginfo\BGInfo.exe") -Destination (Join-Path $startupFolder "BGInfo.exe") -Force
+        Copy-Item -Path (Join-Path $gpoPath "bginfo\bg_config.bgi") -Destination (Join-Path $startupFolder "bg_config.bgi") -Force
+        Copy-Item -Path (Join-Path $gpoPath "bginfo\wallpaper.jpg") -Destination (Join-Path $startupFolder "wallpaper.jpg") -Force
+
+        # Create scripts.ini for user startup script
+        $scriptsIni = Join-Path $polPath "User\Scripts\Startup\scripts.ini"
+        $content = @()
+        $content += "[Startup]"
+        $content += "0CmdLine=apply_bgi.bat"
+        $content += "0Parameters="
+        $content += "0ScriptDescription=Run BGInfo apply script"
         $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
+
+        Write-Output "User startup script and scripts.ini created at $scriptsIni"
       args:
         executable: powershell.exe
-      environment:
-        GPO_GUID: "{{ gpo_guid }}"
+      register: gpo_script_setup
 
-    - name: Link GPO to domain
+    - name: Link the GPO to the domain root
       ansible.windows.win_shell: |
         Import-Module GroupPolicy
+        $gpoName = "{{ gpo_name }}"
         $domainDN = (Get-ADDomain).DistinguishedName
-        New-GPLink -Name "{{ gpo_name }}" -Target $domainDN -LinkEnabled Yes -ErrorAction SilentlyContinue
+        $existingLink = Get-GPLink -Domain (Get-ADDomain).DNSRoot -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $gpoName -and $_.Target -eq $domainDN }
+        if (-not $existingLink) {
+          New-GPLink -Name $gpoName -Target $domainDN -LinkEnabled Yes -Enforced No
+          Write-Output "GPO linked to $domainDN"
+        } else {
+          Write-Output "GPO already linked to $domainDN"
+        }
       args:
         executable: powershell.exe
+      register: gpo_link_result
 
+    - name: Show final summary
+      ansible.builtin.debug:
+        msg:
+          - "BGInfo directory: {{ bginfo_dir }}"
+          - "GPO GUID: {{ gpo_guid }}"
+          - "{{ gpo_script_setup.stdout }}"
+          - "{{ gpo_link_result.stdout }}"
