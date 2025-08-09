@@ -2,6 +2,9 @@
 - name: Deploy BGInfo files and configure GPO for all users
   hosts: srv-work
   gather_facts: yes
+  collections:
+    - community.windows
+
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
       win_file:
