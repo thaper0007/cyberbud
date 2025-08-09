@@ -1,10 +1,7 @@
 ---
-- name: Deploy BGInfo files and configure User Logon GPO
+- name: Deploy BGInfo files and configure User Logon GPO (srv-work only)
   hosts: srv-work
   gather_facts: yes
-  collections:
-    - community.windows
-
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
       win_file:
@@ -35,45 +32,36 @@
         dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\apply_bgi.bat
         validate_certs: no
 
-    - name: Create or get GPO named 'User Logon BGInfo'
+    - name: Create or get GPO named 'User Logon BGInfo' and set User Logon Script
       win_shell: |
         Import-Module GroupPolicy
+
         $GpoName = "User Logon BGInfo"
         $gpo = Get-GPO -Name $GpoName -ErrorAction SilentlyContinue
         if (-not $gpo) {
-          New-GPO -Name $GpoName
-        }
-      args:
-        executable: powershell.exe
-
-    - name: Link 'User Logon BGInfo' GPO to domain root (fallback using PowerShell)
-      win_shell: |
-        Import-Module GroupPolicy
-        $GpoName = "User Logon BGInfo"
-        $DomainDN = "DC=work,DC=local"
-        # Check if link exists
-        $existingLinks = Get-GPInheritance -Target $DomainDN | Select-Object -ExpandProperty GpoLinks
-        if (-not ($existingLinks | Where-Object {$_.DisplayName -eq $GpoName})) {
-          New-GPLink -Name $GpoName -Target $DomainDN -LinkEnabled Yes -Enforced No -Order 1
-        }
-      args:
-        executable: powershell.exe
-
-    - name: Configure logon script in 'User Logon BGInfo' GPO
-      win_shell: |
-        Import-Module GroupPolicy
-        $GpoName = "User Logon BGInfo"
-        $gpo = Get-GPO -Name $GpoName
-
-        $gpoLogonPath = "\\work.local\SYSVOL\work.local\Policies\{$($gpo.Id)}\User\Scripts\Logon"
-
-        if (-not (Test-Path $gpoLogonPath)) {
-          New-Item -Path $gpoLogonPath -ItemType Directory -Force
+          $gpo = New-GPO -Name $GpoName
         }
 
-        $iniFile = Join-Path $gpoLogonPath "Scripts.ini"
-        Set-Content $iniFile "[Logon]" -Force
-        Add-Content $iniFile "0CmdLine=\\work.local\scripts\bginfo\apply_bgi.bat"
-        Add-Content $iniFile "0Parameters="
+        # Link the GPO to the domain root (adjust your domain path here)
+        $domainDN = "DC=work,DC=local"
+        $links = Get-GPOLink -Domain $domainDN
+        if (-not ($links | Where-Object { $_.GPOName -eq $GpoName })) {
+          New-GPLink -Name $GpoName -Target $domainDN -LinkEnabled Yes
+        }
+
+        # Set the logon script path (UNC)
+        $scriptPath = "\\work.local\scripts\bginfo\apply_bgi.bat"
+
+        # Prepare logon scripts folder path
+        $logonScriptPath = "$env:SystemRoot\SYSVOL\sysvol\work.local\Policies\$($gpo.Id)\User\Scripts\Logon"
+        if (-not (Test-Path $logonScriptPath)) {
+          New-Item -ItemType Directory -Path $logonScriptPath -Force | Out-Null
+        }
+
+        # Write Scripts.ini file
+        $iniFile = Join-Path $logonScriptPath "Scripts.ini"
+        "[Logon]" | Out-File -FilePath $iniFile -Encoding ASCII -Force
+        "0CmdLine=$scriptPath" | Out-File -FilePath $iniFile -Encoding ASCII -Append
+        "0Parameters=" | Out-File -FilePath $iniFile -Encoding ASCII -Append
       args:
         executable: powershell.exe
