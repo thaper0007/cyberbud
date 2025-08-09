@@ -44,13 +44,14 @@
 
         # Link the GPO to the domain root (adjust your domain path here)
         $domainDN = "DC=work,DC=local"
+
         $links = Get-GPOLink -Domain $domainDN
         if (-not ($links | Where-Object { $_.GPOName -eq $GpoName })) {
           New-GPLink -Name $GpoName -Target $domainDN -LinkEnabled Yes
         }
 
         # Set the logon script path (UNC)
-        $scriptPath = "\\work.local\scripts\bginfo\apply_bgi.bat"
+        $scriptPath = "\\srv-work\NETLOGON\bginfo\apply_bgi.bat"
 
         # Prepare logon scripts folder path
         $logonScriptPath = Join-Path $env:SystemRoot ("SYSVOL\sysvol\work.local\Policies\$($gpo.Id)\User\Scripts\Logon")
