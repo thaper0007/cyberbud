@@ -1,86 +1,57 @@
 ---
-- name: Deploy BGInfo files and create User Logon GPO (srv-work only)
-  hosts: srv-work
+- name: Deploy BGInfo files and configure User Logon GPO (srv-work only)
+  hosts: windows_servers
   gather_facts: yes
-  vars:
-    domain_dns: "work.local"
-    bginfo_dir: "C:\\Windows\\SYSVOL\\sysvol\\work.local\\scripts\\bginfo"
-    gpo_name: "User Logon BGInfo"
-    netlogon_share: "\\\\srv-work\\NETLOGON\\bginfo"
-
   tasks:
     - name: Ensure NETLOGON bginfo folder exists
-      ansible.windows.win_file:
-        path: "{{ bginfo_dir }}"
+      win_file:
+        path: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo
         state: directory
 
-    - name: Download BGInfo.exe into NETLOGON bginfo
-      ansible.windows.win_get_url:
+    - name: Download BGInfo.exe into NETLOGON bginfo folder
+      win_get_url:
         url: "https://www.dropbox.com/scl/fi/7di71bkr96osmuuy54sxl/Bginfo.exe?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9kmr3&dl=1"
-        dest: "{{ bginfo_dir }}\\BGInfo.exe"
-        force: yes
+        dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\BGInfo.exe
+        validate_certs: no
 
-    - name: Download bg_config.bgi into NETLOGON bginfo
-      ansible.windows.win_get_url:
-        url: "https://www.dropbox.com/scl/fi/h8h62xqklzq3i7h7rtpdk/bg_config.bgi?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax8qsjr&dl=1"
-        dest: "{{ bginfo_dir }}\\bg_config.bgi"
-        force: yes
+    - name: Download bg_config.bgi into NETLOGON bginfo folder
+      win_get_url:
+        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/bg_config.bgi"
+        dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\bg_config.bgi
+        validate_certs: no
 
-    - name: Download wallpaper.jpg into NETLOGON bginfo
-      ansible.windows.win_get_url:
-        url: "https://www.dropbox.com/scl/fi/5g6jh7gyn85h5mbqajk7q/wallpaper.jpg?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9l5y8&dl=1"
-        dest: "{{ bginfo_dir }}\\wallpaper.jpg"
-        force: yes
+    - name: Download wallpaper.jpg into NETLOGON bginfo folder
+      win_get_url:
+        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/wallpaper.jpg"
+        dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\wallpaper.jpg
+        validate_certs: no
 
-    - name: Download apply_bgi.bat into NETLOGON bginfo
-      ansible.windows.win_get_url:
-        url: "https://www.dropbox.com/scl/fi/0xlbt2zdyz7x9cu9lwmmq/apply_bgi.bat?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9mxkk&dl=1"
-        dest: "{{ bginfo_dir }}\\apply_bgi.bat"
-        force: yes
+    - name: Download apply_bgi.bat into NETLOGON bginfo folder
+      win_get_url:
+        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/apply_bgi.bat"
+        dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\apply_bgi.bat
+        validate_certs: no
 
-    - name: Create or get GPO named "{{ gpo_name }}"
-      ansible.windows.win_shell: |
+    - name: Create or get GPO named 'User Logon BGInfo' and set User Logon Script
+      win_shell: |
         Import-Module GroupPolicy
-        $gpo = Get-GPO -Name "{{ gpo_name }}" -ErrorAction SilentlyContinue
+
+        $GpoName = "User Logon BGInfo"
+        $gpo = Get-GPO -Name $GpoName -ErrorAction SilentlyContinue
         if (-not $gpo) {
-          $gpo = New-GPO -Name "{{ gpo_name }}"
+          $gpo = New-GPO -Name $GpoName
         }
-        Write-Output $gpo.Id.Guid
-      register: gpo_guid_result
 
-    - name: Set GPO GUID fact
-      set_fact:
-        gpo_guid: "{{ gpo_guid_result.stdout | trim }}"
+        # Set the logon script path (UNC)
+        $scriptPath = "\\work.local\scripts\bginfo\apply_bgi.bat"
 
-    - name: Create User Scripts Logon folder in GPO and copy apply_bgi.bat and scripts.ini
-      ansible.windows.win_shell: |
-        $domain = "{{ domain_dns }}"
-        $gpoGuid = "{{ gpo_guid }}"
-        $gpoPath = Join-Path -Path "C:\Windows\SYSVOL\sysvol" -ChildPath $domain
-        $polPath = Join-Path $gpoPath ("Policies\$gpoGuid")
-        $logonFolder = Join-Path $polPath "User\Scripts\Logon"
-
-        try {
-          if (-not (Test-Path $logonFolder)) {
-            New-Item -Path $logonFolder -ItemType Directory -Force | Out-Null
-          }
-
-          $sourceFile = Join-Path "{{ bginfo_dir }}" "apply_bgi.bat"
-          Copy-Item -Path $sourceFile -Destination (Join-Path $logonFolder "apply_bgi.bat") -Force
-
-          $scriptsIni = Join-Path $logonFolder "scripts.ini"
-          $content = @"
-[Logon]
-0CmdLine=apply_bgi.bat
-0Parameters=
-0ScriptDescription=Run BGInfo apply script
-"@
-          $content | Out-File -FilePath $scriptsIni -Encoding ASCII -Force
-
-          Write-Output "User Logon script deployed and scripts.ini created at $scriptsIni"
-        } catch {
-          Write-Error "Error in GPO scripts setup: $_"
-          exit 1
+        # Remove existing logon scripts to avoid duplicates
+        $existingScripts = Get-GPLogonScript -Name $GpoName -ErrorAction SilentlyContinue
+        if ($existingScripts) {
+          Remove-GPLogonScript -Name $GpoName -ScriptName $scriptPath -ErrorAction SilentlyContinue
         }
+
+        # Add new logon script
+        Set-GPLogonScript -Name $GpoName -ScriptPath $scriptPath
       args:
         executable: powershell.exe
