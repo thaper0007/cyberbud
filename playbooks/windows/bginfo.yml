@@ -16,19 +16,19 @@
 
     - name: Download bg_config.bgi into NETLOGON bginfo folder
       win_get_url:
-        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/bg_config.bgi"
+        url: "https://www.dropbox.com/scl/fi/h8h62xqklzq3i7h7rtpdk/bg_config.bgi?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax8qsjr&dl=1"
         dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\bg_config.bgi
         validate_certs: no
 
     - name: Download wallpaper.jpg into NETLOGON bginfo folder
       win_get_url:
-        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/wallpaper.jpg"
+        url: "https://www.dropbox.com/scl/fi/5g6jh7gyn85h5mbqajk7q/wallpaper.jpg?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9l5y8&dl=1"
         dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\wallpaper.jpg
         validate_certs: no
 
     - name: Download apply_bgi.bat into NETLOGON bginfo folder
       win_get_url:
-        url: "https://raw.githubusercontent.com/thaper0007/cyberbud/main/playbooks/windows/files/apply_bgi.bat"
+        url: "https://www.dropbox.com/scl/fi/0xlbt2zdyz7x9cu9lwmmq/apply_bgi.bat?rlkey=kjxoykquz24rl9ihmkat02vvk&st=6ax9mxkk&dl=1"
         dest: C:\Windows\SYSVOL\sysvol\work.local\scripts\bginfo\apply_bgi.bat
         validate_certs: no
 
