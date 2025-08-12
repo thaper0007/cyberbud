@@ -1,20 +1,20 @@
 # ====================================================================
-# NetBird Installation & Auto Update Script (combined)
+# NetBird Installation & Auto Update Script (persistent updater folder)
 # ====================================================================
 
 # --- Configuration Variables ---
 $setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"  # Replace with your setup key
 $managementUrl = "https://netbird.cyberbud.ca:443"   # Optional
-$tempPath = "C:\Windows\Temp"
-$installerFile = "$tempPath\netbird-latest.msi"
+$updaterFolder = "C:\ProgramData\NetBirdUpdater"
+$installerFile = Join-Path $updaterFolder "netbird-latest.msi"
+$updateScriptPath = Join-Path $updaterFolder "netbird_update.ps1"
 $netbirdExe = "C:\Program Files\NetBird\netbird.exe"
 $netbirdUI = "C:\Program Files\NetBird\netbird-ui.exe"
 $taskName = "NetBird Auto Update"
-$updateScriptPath = "$tempPath\netbird_update.ps1"
 
-# --- Step 1: Ensure Temp Directory ---
-if (-Not (Test-Path $tempPath)) {
-    New-Item -ItemType Directory -Path $tempPath | Out-Null
+# --- Step 1: Ensure updater folder exists ---
+if (-Not (Test-Path $updaterFolder)) {
+    New-Item -ItemType Directory -Path $updaterFolder | Out-Null
 }
 
 # --- Step 2: Download Latest MSI Installer ---
@@ -37,7 +37,7 @@ try {
 # --- Step 3: Install NetBird ---
 Write-Host "Installing NetBird..."
 try {
-    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$installerFile`" /qn /L*v $tempPath\netbird_install.log"
+    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$installerFile`" /qn /L*v $updaterFolder\netbird_install.log"
     Write-Host "Installation completed successfully."
 } catch {
     Write-Error "Installation failed: $_"
@@ -114,7 +114,6 @@ try {
 # --- Step 8: Create Scheduled Task for Auto-Update ---
 
 $updateScriptContent = @"
-# NetBird Auto-Update Script
 function Get-InstalledNetBirdVersion {
     \$netbirdExe = 'C:\Program Files\NetBird\netbird.exe'
     if (Test-Path \$netbirdExe) {
@@ -142,7 +141,7 @@ function Update-NetBird {
     \$msiAsset = \$response.assets | Where-Object { \$_.name -like '*windows_amd64.msi' }
     if (-not \$msiAsset) { return }
 
-    \$tempInstaller = "\$env:TEMP\netbird-latest.msi"
+    \$tempInstaller = "$updaterFolder\netbird-latest.msi"
     Invoke-WebRequest -Uri \$msiAsset.browser_download_url -OutFile \$tempInstaller
 
     Start-Process msiexec.exe -ArgumentList "/i `"\$tempInstaller`" /quiet /norestart" -Wait
@@ -153,18 +152,23 @@ function Update-NetBird {
 Update-NetBird
 "@
 
-# Save update script to file
 Set-Content -Path $updateScriptPath -Value $updateScriptContent -Encoding UTF8
 
-# Register scheduled task if not exists
+$triggerDaily = New-ScheduledTaskTrigger -Daily -At 3am
+$triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$updateScriptPath`""
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+
 if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$updateScriptPath`""
-    $trigger = New-ScheduledTaskTrigger -Daily -At 3am
-    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal
-    Write-Host "Scheduled task '$taskName' created to run daily at 3am."
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggerDaily, $triggerLogon -Principal $principal
+    Write-Host "Scheduled task '$taskName' created with triggers at 3 AM daily and at user logon."
 } else {
-    Write-Host "Scheduled task '$taskName' already exists."
+    $task = Get-ScheduledTask -TaskName $taskName
+    $task.Triggers.Clear()
+    $task.Triggers.Add($triggerDaily)
+    $task.Triggers.Add($triggerLogon)
+    Set-ScheduledTask -InputObject $task
+    Write-Host "Scheduled task '$taskName' triggers updated to 3 AM daily and user logon."
 }
 
 Write-Host "Script finished successfully."
