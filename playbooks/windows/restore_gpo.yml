@@ -1,28 +1,9 @@
 ---
-- name: Restore specific backup folder on one server
+- name: Restore GPO from backup
   hosts: "{{ target_host }}"
   gather_facts: no
 
-  vars_prompt:
-    - name: backup_folder
-      prompt: "Enter the backup folder name you want to restore"
-      private: no
-
   tasks:
-    - name: Verify that the backup folder exists
-      ansible.builtin.stat:
-        path: "/backups/{{ backup_folder }}"
-      register: backup_check
-
-    - name: Fail if the folder doesn't exist
-      ansible.builtin.fail:
-        msg: "Backup folder '{{ backup_folder }}' does not exist."
-      when: not backup_check.stat.exists
-
-    - name: Restore backup folder to /data
-      ansible.builtin.copy:
-        src: "/backups/{{ backup_folder }}/"
-        dest: "/data/"
-        owner: root
-        group: root
-        mode: '0644'
+    - name: Restore GPO from selected backup
+      ansible.windows.win_command: >
+        powershell.exe -Command "Import-GPO -All -Path 'C:\\GPO_Backups\\{{ backup_folder }}'"
