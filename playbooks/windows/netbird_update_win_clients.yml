@@ -1,0 +1,32 @@
+---
+- name: Get live Windows IPs from NetBird API
+  hosts: localhost
+  gather_facts: no
+  vars:
+    netbird_api_url: "https://netbird.cyberbud.ca/api/peers"
+    netbird_token: "nbp_wJez7XpMzDuFJGFodk2K8cPNUDlt9Z1D5IED"
+
+  tasks:
+    - name: Query NetBird API for peers
+      uri:
+        url: "{{ netbird_api_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbird_token }}"
+        return_content: yes
+      register: peers_response
+
+    - name: Parse and filter for live Windows IPs
+      set_fact:
+        windows_ips: >-
+          {{
+            peers_response.json
+            | selectattr('os', 'match', 'windows')
+            | selectattr('connected', 'equalto', true)
+            | map(attribute='ip')
+            | list
+          }}
+
+    - name: Show Windows peer IPs
+      debug:
+        var: windows_ips
