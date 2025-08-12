@@ -1,6 +1,6 @@
 ---
 - name: Backup all GPOs on Domain Controllers
-  hosts: windows_servers
+  hosts: srv-work
   gather_facts: yes
   become: yes
   become_method: runas
