@@ -20,7 +20,7 @@
         $backupPath = '{{ backup_folder }}'
         $backupGUIDs = Get-ChildItem -Path $backupPath -Directory | Where-Object { $_.Name -match '^\{.*\}$' } | Select-Object -ExpandProperty Name
         foreach ($guid in $backupGUIDs) {
-          Restore-GPO -BackupId $guid -Path $backupPath -Force
+          Restore-GPO -BackupId $guid -Path $backupPath
         }
       args:
         executable: powershell.exe
