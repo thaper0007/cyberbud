@@ -1,0 +1,36 @@
+- name: Restore GPOs from chosen backup folder
+  hosts: windows_servers
+  gather_facts: yes
+
+  vars_prompt:
+    - name: backup_date
+      prompt: "Enter the GPO backup date folder to restore (e.g. 2025-08-12)"
+      private: no
+
+  vars:
+    backup_root: "C:\\GPO_Backups"
+
+  tasks:
+    - name: List GPO backup folders in chosen backup date
+      ansible.windows.win_shell: |
+        Get-ChildItem -Path "{{ backup_root }}\\{{ backup_date }}" -Directory | Select-Object -ExpandProperty Name
+      args:
+        executable: powershell.exe
+      register: gpo_backup_folders
+
+    - name: Show found GPO backups
+      debug:
+        msg: "GPO backup folders found: {{ gpo_backup_folders.stdout_lines }}"
+
+    - name: Confirm continue before restore
+      pause:
+        prompt: "Proceed to restore all GPOs from backup folder {{ backup_date }}? (press Enter to continue or Ctrl+C to abort)"
+
+    - name: Restore each GPO from backup
+      ansible.windows.win_shell: |
+        Import-Module GroupPolicy
+        $backupPath = "{{ backup_root }}\\{{ backup_date }}\\{{ item }}"
+        Restore-GPO -Path $backupPath -TargetName "{{ item }}" -Confirm:$false
+      args:
+        executable: powershell.exe
+      loop: "{{ gpo_backup_folders.stdout_lines }}"
