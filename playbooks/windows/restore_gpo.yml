@@ -1,9 +1,31 @@
 ---
-- name: Restore GPO from backup
-  hosts: "{{ target_host }}"
-  gather_facts: no
-
+- name: Restore GPOs from backup folder
+  hosts: "{{ target_host }}"   # dynamic host from variable
+  gather_facts: yes
+  vars:
+    # no default here — will come from Semaphore survey variables
   tasks:
-    - name: Restore GPO from selected backup
-      ansible.windows.win_command: >
-        powershell.exe -Command "Import-GPO -All -Path 'C:\\GPO_Backups\\{{ backup_folder }}'"
+    - name: Check if backup folder exists
+      ansible.windows.win_stat:
+        path: "{{ backup_folder }}"
+      register: backup_folder_stat
+
+    - name: Fail if backup folder does not exist
+      ansible.builtin.fail:
+        msg: "Backup folder {{ backup_folder }} does not exist!"
+      when: not backup_folder_stat.stat.exists
+
+    - name: Restore all GPOs from backup folder
+      ansible.windows.win_shell: |
+        Import-Module GroupPolicy
+        $backupPath = '{{ backup_folder }}'
+        $backupGUIDs = Get-GPOBackupHistory -Path $backupPath | Select-Object -ExpandProperty BackupId
+        foreach ($guid in $backupGUIDs) {
+          Restore-GPO -BackupId $guid -Path $backupPath -Force
+        }
+      args:
+        executable: powershell.exe
+
+    - name: Confirm restoration completed
+      debug:
+        msg: "GPOs restored from {{ backup_folder }} on {{ target_host }}"
