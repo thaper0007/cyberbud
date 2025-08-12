@@ -5,7 +5,7 @@
 # --- Configuration Variables ---
 $setupKey = "860FFC85-4995-452D-B0DB-0B8ACC661779"  # Replace with your setup key
 $managementUrl = "https://netbird.cyberbud.ca:443" # Optional
-$tempPath = "C:\Temp"
+$tempPath = "C:\Windows\Temp"
 $installerFile = "$tempPath\netbird-latest.msi"
 $netbirdExe = "C:\Program Files\NetBird\netbird.exe"
 $netbirdUI = "C:\Program Files\NetBird\netbird-ui.exe"
