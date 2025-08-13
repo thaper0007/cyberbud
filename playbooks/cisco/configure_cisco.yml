@@ -1,0 +1,71 @@
+- name: Configure Cisco switches
+  hosts: cisco_switches
+  gather_facts: no
+  vars:
+    vlan_10_interfaces:
+      - GigabitEthernet0/1
+      - GigabitEthernet0/2
+      - GigabitEthernet0/3
+
+    vlan_20_interfaces:
+      - GigabitEthernet1/0
+      - GigabitEthernet1/1
+      - GigabitEthernet1/3
+
+  tasks:
+    - name: Set hostname on the switch
+      ios_config:
+        lines:
+          - hostname {{ switch_hostname }}
+      notify: Save config
+
+    - name: Create VLAN 10 on the switch
+      ios_config:
+        lines:
+          - name SECURED
+        parents: vlan 10
+      notify: Save config
+
+    - name: Create VLAN 20 on the switch
+      ios_config:
+        lines:
+          - name GUEST
+        parents: vlan 20
+      notify: Save config
+
+    - name: Configure access ports for VLAN 10
+      ios_config:
+        lines:
+          - switchport mode access
+          - switchport access vlan 10
+        parents: "interface {{ item }}"
+      loop: "{{ vlan_10_interfaces }}"
+      notify: Save config
+
+    - name: Configure access ports for VLAN 20
+      ios_config:
+        lines:
+          - switchport mode access
+          - switchport access vlan 20
+        parents: "interface {{ item }}"
+      loop: "{{ vlan_20_interfaces }}"
+      notify: Save config
+
+    - name: Get running config
+      ios_command:
+        commands:
+          - show running-config
+      register: running_config
+
+    - name: Save config output to local file with timestamp
+      vars:
+        timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
+      copy:
+        content: "{{ running_config.stdout[0] }}"
+        dest: "{{ playbook_dir }}/config_backups/{{ switch_hostname }}-running-config-{{ timestamp }}.txt"
+
+  handlers:
+    - name: Save config
+      ios_command:
+        commands:
+          - write memory
