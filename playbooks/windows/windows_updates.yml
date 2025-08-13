@@ -1,6 +1,6 @@
 ---
 - name: Update Domain Controllers (Win Server 2019+)
-  hosts: windows_servers
+  hosts: "{{ target_hosts }}"
   gather_facts: no
   tasks:
 
