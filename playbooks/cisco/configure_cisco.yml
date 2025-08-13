@@ -1,5 +1,5 @@
 - name: Configure Cisco switches
-  hosts: cisco_switches
+  hosts: "{{ target_host }}"
   gather_facts: no
   vars:
     vlan_10_interfaces:
