@@ -1,6 +1,6 @@
 ---
 - name: Update Linux hosts
-  hosts: linux_servers
+  hosts: "{{ target_hosts }}"
   become: yes
   tasks:
     - name: Update apt cache
