@@ -12,11 +12,17 @@
       - GigabitEthernet1/1
       - GigabitEthernet1/3
 
+  # Force network CLI connection for Cisco IOS
+  vars_files: []
+  vars_prompt: []
+  connection: network_cli
+  network_os: ios
+
   tasks:
     - name: Set hostname on the switch
       ios_config:
         lines:
-          - hostname {{ switch_hostname }}
+          - hostname {{ inventory_hostname }}
       notify: Save config
 
     - name: Create VLAN 10 on the switch
@@ -62,7 +68,7 @@
         timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
       copy:
         content: "{{ running_config.stdout[0] }}"
-        dest: "{{ playbook_dir }}/config_backups/{{ switch_hostname }}-running-config-{{ timestamp }}.txt"
+        dest: "{{ playbook_dir }}/config_backups/{{ inventory_hostname }}-running-config-{{ timestamp }}.txt"
 
   handlers:
     - name: Save config
