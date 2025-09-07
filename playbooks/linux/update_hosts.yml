@@ -3,6 +3,12 @@
   hosts: "{{ target_hosts }}"
   become: yes
   tasks:
+    - name: Hold linux-firmware on semaphore host (workaround mirror 500)
+      command: apt-mark hold linux-firmware
+      when: inventory_hostname == "ansible-semaphore"
+      changed_when: false
+      failed_when: false
+
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -11,3 +17,9 @@
     - name: Upgrade all packages
       apt:
         upgrade: dist
+
+    - name: Unhold linux-firmware on semaphore host
+      command: apt-mark unhold linux-firmware
+      when: inventory_hostname == "ansible-semaphore"
+      changed_when: false
+      failed_when: false
