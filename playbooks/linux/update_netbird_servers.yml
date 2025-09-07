@@ -1,15 +1,112 @@
 ---
-- name: Update Netbird Servers
+- name: Resilient update/upgrade for NetBird servers
   hosts: netbird_servers
   become: yes
-  tasks:
-    - name: Update apt package cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
+  gather_facts: yes
+  vars:
+    apt_retries: 8
+    use_https_global_mirrors: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
 
-    - name: Upgrade all packages to latest version
+  pre_tasks:
+    - name: Clean corrupted apt lists (safe on Debian/Ubuntu)
+      shell: |
+        set -e
+        apt-get clean
+        rm -rf /var/lib/apt/lists/*
+        mkdir -p /var/lib/apt/lists/partial
+      args: { warn: false }
+
+    - name: Switch to HTTPS global mirrors (Ubuntu only)
+      when: use_https_global_mirrors and ansible_facts.os_family == "Debian" and ansible_facts.distribution == "Ubuntu"
+      block:
+        - name: Set main archive to archive.ubuntu.com over HTTPS
+          replace:
+            path: /etc/apt/sources.list
+            regexp: 'http://([a-z0-9.-]+)?archive\.ubuntu\.com/ubuntu'
+            replace: 'https://archive.ubuntu.com/ubuntu'
+        - name: Set security mirror to HTTPS
+          replace:
+            path: /etc/apt/sources.list
+            regexp: 'http://security\.ubuntu\.com/ubuntu'
+            replace: 'https://security.ubuntu.com/ubuntu'
+
+    - name: apt update with retries
+      shell: apt-get -o Acquire::Retries={{ apt_retries }} -o Acquire::http::No-Cache=true update
+      register: apt_update
+      retries: 3
+      delay: 10
+      until: apt_update.rc == 0
+
+  tasks:
+    - name: Try full upgrade (retry + fix-missing + prefer IPv4)
+      shell: >
+        apt-get -o Acquire::Retries={{ apt_retries }}
+        -o Acquire::ForceIPv4=true
+        --fix-missing
+        dist-upgrade -y
+      register: dist_result
+      retries: 2
+      delay: 20
+      until: dist_result.rc == 0
+      ignore_errors: yes
+
+    - name: If linux-firmware blocks, hold it temporarily and upgrade the rest
+      when: dist_result is failed and "'linux-firmware' in (dist_result.stderr | default('')) or 'linux-firmware' in (dist_result.stdout | default(''))"
+      block:
+        - name: Hold linux-firmware
+          shell: apt-mark hold linux-firmware
+        - name: Retry upgrade without linux-firmware
+          shell: apt-get -o Acquire::Retries={{ apt_retries }} dist-upgrade -y
+        - name: Unhold linux-firmware (we will try again later)
+          shell: apt-mark unhold linux-firmware
+          ignore_errors: yes
+
+    - name: Autoremove and autoclean
       apt:
-        upgrade: dist
         autoremove: yes
         autoclean: yes
+        force_apt_get: yes
+      register: cleanup_result
+
+    - name: Ensure NetBird package itself is present/latest (if installed via deb)
+      apt:
+        name: netbird
+        state: latest
+        force_apt_get: yes
+      ignore_errors: yes
+
+    - name: Restart NetBird service if present
+      service:
+        name: netbird
+        state: restarted
+      ignore_errors: yes
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot if kernel/critical libs changed
+      reboot:
+        msg: "Rebooting after upgrades"
+        reboot_timeout: 900
+      when: reboot_required.stat.exists
+
+  post_tasks:
+    - name: Try installing linux-firmware again (best-effort)
+      shell: apt-get -o Acquire::Retries={{ apt_retries }} install -y linux-firmware
+      register: fw_try
+      changed_when: "'Setting up linux-firmware' in (fw_try.stdout | default(''))"
+      failed_when: false
+      when: ansible_facts.distribution == "Ubuntu"
+
+    - name: Final apt health (list upgradable packages, non-fatal)
+      shell: apt-get -s dist-upgrade | awk '/^Inst /{print $2}' || true
+      register: upgradable
+      changed_when: false
+
+    - name: Show any still-upgradable packages
+      debug:
+        var: upgradable.stdout_lines
