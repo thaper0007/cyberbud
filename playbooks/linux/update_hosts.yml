@@ -1,14 +1,30 @@
 ---
-- name: Update Linux hosts
+- name: Update Linux hosts (skip offline)
   hosts: "{{ target_hosts }}"
   become: yes
-  tasks:
-    - name: Hold linux-firmware on semaphore host (workaround mirror 500)
-      command: apt-mark hold linux-firmware
-      when: inventory_hostname == "ansible-semaphore"
-      changed_when: false
-      failed_when: false
+  gather_facts: no   # avoid failing before we test reachability
+  vars:
+    connect_timeout: 15   # seconds
 
+  pre_tasks:
+    - name: Check if host is reachable
+      wait_for_connection:
+        timeout: "{{ connect_timeout }}"
+      register: wfc
+      ignore_errors: true
+
+    - name: Drop unreachable hosts from this run
+      meta: end_host
+      when: wfc is failed
+
+    - name: Clear errors for dropped hosts (keeps recap clean)
+      meta: clear_host_errors
+      when: wfc is failed
+
+    - name: Gather facts for reachable hosts
+      setup:
+
+  tasks:
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -17,9 +33,3 @@
     - name: Upgrade all packages
       apt:
         upgrade: dist
-
-    - name: Unhold linux-firmware on semaphore host
-      command: apt-mark unhold linux-firmware
-      when: inventory_hostname == "ansible-semaphore"
-      changed_when: false
-      failed_when: false
