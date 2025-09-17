@@ -1,6 +1,6 @@
 ---
 - name: Update Linux hosts
-  hosts: "{{ target_hosts }}"
+  hosts: "{{ target_hosts | default('linux_servers') }}"
   become: yes
   tasks:
     - name: Hold linux-firmware on semaphore host (workaround mirror 500)
