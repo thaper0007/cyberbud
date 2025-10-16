@@ -98,15 +98,21 @@
       shell: dpkg --configure -a || true
       changed_when: false
 
-    - name: Install base packages (incl. open-iscsi)
-      apt:
-        name: "{{ base_packages }}"
-        state: present
-        update_cache: yes
-        force_apt_get: yes
-        lock_timeout: 600
-      environment:
-        DEBIAN_FRONTEND: noninteractive
+    # ---- Rock-solid installer (retries) ----
+    - name: Install base packages (incl. open-iscsi) — fallback shell
+      shell: |
+        set -e
+        export DEBIAN_FRONTEND=noninteractive
+        for i in {1..8}; do
+          apt-get update && \
+          apt-get install -y --no-install-recommends {{ base_packages | join(' ') }} && exit 0
+          echo "apt busy, retry $i/8…"
+          sleep 10
+        done
+        echo "apt failed after retries" >&2
+        exit 1
+      args:
+        executable: /bin/bash
 
     - name: Enable and start iscsid
       systemd:
