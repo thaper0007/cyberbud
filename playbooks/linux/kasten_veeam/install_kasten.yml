@@ -1,10 +1,11 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
-# Play 1: Base packages + iSCSI on ALL nodes (with robust apt-lock handling)
+# Play 1: Base packages + iSCSI on ALL nodes (serialized, robust apt-lock handling)
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
   become: yes
+  serial: 1            # Run one host at a time to avoid apt lock races
   vars:
     base_packages:
       - curl
@@ -13,9 +14,9 @@
       - jq
       - nfs-common
       - open-iscsi
+
   pre_tasks:
-    # Stop/disable the timers so they don't re-trigger while we're installing
-    - name: Stop apt-daily timers (temporary)
+    - name: Stop apt/upgrade timers (temporary)
       systemd:
         name: "{{ item }}"
         state: stopped
@@ -25,32 +26,54 @@
         - apt-daily-upgrade.timer
       failed_when: false
 
-    - name: Stop apt-daily services (temporary)
+    - name: Stop apt/upgrade services (temporary)
       systemd:
         name: "{{ item }}"
         state: stopped
       loop:
         - apt-daily.service
         - apt-daily-upgrade.service
+        - unattended-upgrades.service
       failed_when: false
 
-    # Wait until no apt/dpkg/unattended-upgrades processes or locks are present
-    - name: Wait for apt/dpkg locks to be released
-      shell: |
-        set -e
-        # return 0 only when all are free
-        for i in {1..1}; do :; done  # no-op for shells without {..}
-        if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -f unattended-upgrade >/dev/null; then
-          exit 1
-        fi
-        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
-          exit 1
-        fi
-      register: apt_locks_free
-      retries: 60
-      delay: 5
-      until: apt_locks_free.rc == 0
-      changed_when: false
+    - name: Stop PackageKit (can hold apt lock)
+      systemd:
+        name: packagekit
+        state: stopped
+        masked: yes
+      failed_when: false
+
+    # Wait up to ~5 minutes; if still locked, the rescue block force-cleans safely.
+    - block:
+        - name: Wait for apt/dpkg locks to be released
+          shell: |
+            set -e
+            # fail if any package managers running
+            for p in apt apt-get dpkg unattended-upgrade packagekitd; do
+              pgrep -x "$p" >/dev/null && exit 1
+            done
+            # fail if any locks in use
+            for f in /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock; do
+              fuser "$f" >/dev/null 2>&1 && exit 1 || true
+            done
+          register: apt_locks_free
+          retries: 60
+          delay: 5
+          until: apt_locks_free.rc == 0
+          changed_when: false
+      rescue:
+        - name: Force stop lingering package managers (last resort)
+          shell: |
+            set -e
+            systemctl stop unattended-upgrades || true
+            systemctl stop packagekit || true
+            pkill -9 -x apt || true
+            pkill -9 -x apt-get || true
+            pkill -9 -x dpkg || true
+            pkill -9 -f unattended-upgrade || true
+            pkill -9 -x packagekitd || true
+            rm -f /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock
+            dpkg --configure -a || true
 
   tasks:
     - name: Install base packages (incl. open-iscsi)
@@ -58,6 +81,8 @@
         name: "{{ base_packages }}"
         state: present
         update_cache: yes
+        force_apt_get: yes
+        lock_timeout: 600
       environment:
         DEBIAN_FRONTEND: noninteractive
 
@@ -68,8 +93,7 @@
         state: started
 
   post_tasks:
-    # Re-enable the timers we paused
-    - name: Re-enable apt-daily timers
+    - name: Re-enable apt timers
       systemd:
         name: "{{ item }}"
         state: started
@@ -79,32 +103,43 @@
         - apt-daily-upgrade.timer
       failed_when: false
 
+    - name: Unmask PackageKit (optional)
+      systemd:
+        name: packagekit
+        masked: no
+      failed_when: false
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Play 2: K3s/Helm (if needed), Longhorn, MetalLB, Kasten (unchanged)
+# Play 2: K3s/Helm (if needed), Longhorn, MetalLB, and Kasten K10
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Install K3s/Helm (if needed), Longhorn, MetalLB, and Kasten K10
   hosts: k3s_master
   become: yes
 
   vars:
+    # General
     install_k3s_channel: "stable"
     kube_user: "parteek"
     kubeconfig_root: "/etc/rancher/k3s/k3s.yaml"
     kube_user_config: "/home/{{ kube_user }}/.kube/config"
 
+    # Longhorn
     longhorn_ns: "longhorn-system"
     longhorn_replica_count: 1
     make_longhorn_default: true
 
+    # MetalLB
     metallb_version_manifest: "https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml"
     metallb_ns: "metallb-system"
     metallb_pool_range: "172.30.50.210-172.30.50.240"
 
+    # Kasten
     kasten_ns: "kasten-io"
     kasten_cluster_name: "k8s-cluster"
     kasten_gateway_svc: "gateway"
 
   pre_tasks:
+    # ---- K3s (server) ----
     - name: Check if k3s service exists
       shell: "systemctl list-unit-files | grep -E '^k3s\\.service'"
       register: k3s_service
@@ -138,6 +173,7 @@
       delay: 5
       until: cluster_info.rc == 0
 
+    # ---- Helm ----
     - name: Check if Helm is installed
       command: bash -lc "command -v helm"
       register: helm_check
@@ -153,6 +189,7 @@
       command: helm version
       changed_when: false
 
+    # ---- kubeconfig for user (handy for CLI) ----
     - name: Create user kube dir
       file:
         path: "/home/{{ kube_user }}/.kube"
@@ -171,7 +208,7 @@
         remote_src: true
 
   tasks:
-    # Longhorn
+    # ================= Longhorn =================
     - name: Add Longhorn Helm repo
       command: helm repo add longhorn https://charts.longhorn.io
       register: lh_repo
@@ -205,7 +242,7 @@
       register: sc_patch
       failed_when: false
 
-    # MetalLB
+    # ================= MetalLB =================
     - name: Install MetalLB components
       command: "kubectl apply -f {{ metallb_version_manifest }}"
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
@@ -252,7 +289,7 @@
       command: kubectl apply -f /tmp/metallb-l2adv.yaml
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
-    # Kasten K10
+    # ================= Kasten K10 =================
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: k_repo
