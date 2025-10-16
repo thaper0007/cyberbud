@@ -1,16 +1,67 @@
-
 ---
-- name: Deploy Veeam Kasten K10 on K3s
+- name: Deploy Veeam Kasten K10 on K3s (install Helm if needed)
   hosts: k3s_master
   become: yes
+
+  vars:
+    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"  # root-owned kubeconfig from k3s
+
+  pre_tasks:
+    - name: Ensure base tools for Helm install are present
+      apt:
+        name:
+          - curl
+          - tar
+          - ca-certificates
+        state: present
+        update_cache: yes
+
+    - name: Check if helm is already installed
+      command: bash -lc "command -v helm"
+      register: helm_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Helm (if missing)
+      shell: |
+        set -e
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        executable: /bin/bash
+      when: helm_check.rc != 0
+
+    - name: Verify helm version
+      command: helm version
+      register: helm_ver
+      changed_when: false
+
+    - name: Verify kubectl is available (k3s provides it)
+      command: bash -lc "command -v kubectl"
+      changed_when: false
+
+    - name: Wait for Kubernetes API to be reachable
+      command: kubectl cluster-info
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_info
+      retries: 20
+      delay: 5
+      until: cluster_info.rc == 0
+
   tasks:
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: repo_result
-      changed_when: "'has been added' in repo_result.stdout or 'already exists' in repo_result.stderr"
+      changed_when: >
+        'has been added' in (repo_result.stdout + repo_result.stderr) or
+        'already exists' in (repo_result.stdout + repo_result.stderr)
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: Update Helm repos
       command: helm repo update
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: Install or upgrade Kasten K10
       command: >
@@ -18,14 +69,20 @@
         --namespace kasten-io --create-namespace
         --set global.clusterName="k8s-cluster"
         --set global.persistence.storageClass=longhorn
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Expose Kasten dashboard via LoadBalancer
+    - name: Expose K10 gateway via LoadBalancer
       command: >
         kubectl -n kasten-io patch svc gateway
         -p '{"spec":{"type":"LoadBalancer"}}'
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Show Kasten service status
+    - name: Show K10 gateway service (watch for EXTERNAL-IP)
       command: kubectl -n kasten-io get svc gateway -o wide
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
       register: svc_output
 
     - debug:
