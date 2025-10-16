@@ -1,16 +1,21 @@
 ---
-- name: Install K3s (if needed), Helm, then deploy Veeam Kasten K10
+- name: Install K3s (if needed), Helm, MetalLB, and deploy Veeam Kasten K10
   hosts: k3s_master
   become: yes
   become_user: root
 
   vars:
-    install_k3s_channel: "stable"                  # or "v1.33"
-    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"   # root-owned kubeconfig created by k3s
+    install_k3s_channel: "stable"
+    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"
     kasten_cluster_name: "k8s-cluster"
+    metallb_manifest_url: "https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml"
+    metallb_pool_range: "172.30.50.210-172.30.50.240"
+    metallb_ns: "metallb-system"
+    kasten_ns: "kasten-io"
+    svc_name: "gateway"
 
   pre_tasks:
-    - name: Wait for apt/dpkg locks to be released (up to ~2 minutes)
+    - name: Wait for apt/dpkg locks to clear
       shell: |
         ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1
       register: apt_locks_free
@@ -21,14 +26,11 @@
 
     - name: Ensure base tools present
       apt:
-        name:
-          - curl
-          - tar
-          - ca-certificates
+        name: [curl, tar, ca-certificates]
         state: present
         update_cache: yes
 
-    # ---------- K3s install if missing ----------
+    # ---------- K3s ----------
     - name: Check if k3s service exists
       shell: systemctl list-unit-files | grep -E '^k3s\.service'
       register: k3s_service
@@ -41,13 +43,13 @@
         curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL={{ install_k3s_channel }} sh -s -
       when: k3s_service.rc != 0
 
-    - name: Ensure k3s service is active
+    - name: Ensure k3s service is running
       systemd:
         name: k3s
         state: started
         enabled: yes
 
-    - name: Wait for kubeconfig to appear
+    - name: Wait for kubeconfig
       stat:
         path: "{{ kubeconfig_path }}"
       register: kcfg_stat
@@ -56,7 +58,7 @@
       until: kcfg_stat.stat.exists
       changed_when: false
 
-    - name: Wait for Kubernetes API to be reachable
+    - name: Wait for Kubernetes API
       command: kubectl cluster-info
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
@@ -65,14 +67,14 @@
       delay: 5
       until: cluster_info.rc == 0
 
-    # ---------- Helm install if missing ----------
-    - name: Check if helm is already installed
+    # ---------- Helm ----------
+    - name: Check if helm installed
       command: bash -lc "command -v helm"
       register: helm_check
       ignore_errors: true
       changed_when: false
 
-    - name: Install Helm (if missing)
+    - name: Install Helm if missing
       shell: |
         set -e
         curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
@@ -80,12 +82,57 @@
         executable: /bin/bash
       when: helm_check.rc != 0
 
-    - name: Verify helm version
-      command: helm version
-      register: helm_ver
-      changed_when: false
-
   tasks:
+    # ---------- MetalLB ----------
+    - name: Install MetalLB components
+      command: kubectl apply -f {{ metallb_manifest_url }}
+      environment: { KUBECONFIG: "{{ kubeconfig_path }}" }
+
+    - name: Wait for MetalLB controller Ready
+      command: kubectl -n {{ metallb_ns }} rollout status deploy/controller --timeout=180s
+      environment: { KUBECONFIG: "{{ kubeconfig_path }}" }
+
+    - name: Wait for MetalLB speaker Ready
+      command: kubectl -n {{ metallb_ns }} rollout status ds/speaker --timeout=180s
+      environment: { KUBECONFIG: "{{ kubeconfig_path }}" }
+
+    - name: Create MetalLB IP pool
+      copy:
+        dest: /tmp/metallb-ip-pool.yaml
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: lb-pool
+            namespace: {{ metallb_ns }}
+          spec:
+            addresses:
+              - {{ metallb_pool_range }}
+      register: pool_file
+
+    - name: Apply IP pool
+      command: kubectl apply -f /tmp/metallb-ip-pool.yaml
+      environment: { KUBECONFIG: "{{ kubeconfig_path }}" }
+
+    - name: Create L2Advertisement
+      copy:
+        dest: /tmp/metallb-l2adv.yaml
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: lb-advert
+            namespace: {{ metallb_ns }}
+          spec:
+            ipAddressPools:
+              - lb-pool
+      register: adv_file
+
+    - name: Apply L2Advertisement
+      command: kubectl apply -f /tmp/metallb-l2adv.yaml
+      environment: { KUBECONFIG: "{{ kubeconfig_path }}" }
+
+    # ---------- Kasten ----------
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: repo_result
@@ -99,24 +146,37 @@
     - name: Install or upgrade Kasten K10
       command: >
         helm upgrade --install k10 kasten/k10
-        --namespace kasten-io --create-namespace
+        --namespace {{ kasten_ns }} --create-namespace
         --set global.clusterName="{{ kasten_cluster_name }}"
         --set global.persistence.storageClass=longhorn
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Expose K10 gateway via LoadBalancer
+    - name: Patch K10 gateway to LoadBalancer
       command: >
-        kubectl -n kasten-io patch svc gateway
+        kubectl -n {{ kasten_ns }} patch svc {{ svc_name }}
         -p '{"spec":{"type":"LoadBalancer"}}'
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Show K10 gateway service (EXTERNAL-IP)
-      command: kubectl -n kasten-io get svc gateway -o wide
+    - name: Wait for external IP
+      command: >
+        bash -lc "kubectl -n {{ kasten_ns }} get svc {{ svc_name }}
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: gw_ip
+      retries: 30
+      delay: 5
+      until: gw_ip.stdout | length > 0
+
+    - name: Display K10 gateway service
+      command: kubectl -n {{ kasten_ns }} get svc {{ svc_name }} -o wide
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
       register: svc_output
 
     - debug:
-        var: svc_output.stdout_lines
+        msg:
+          - "{{ svc_output.stdout }}"
+          - "Kasten UI: http://{{ gw_ip.stdout }}/k10/"
