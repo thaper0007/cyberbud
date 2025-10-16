@@ -1,6 +1,6 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
-# Play 1: Base packages + iSCSI on ALL nodes (serialized, robust apt-lock handling)
+# Play 1: Base packages + iSCSI on ALL nodes (serialized + robust apt-lock handling)
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
@@ -53,7 +53,7 @@
               pgrep -x "$p" >/dev/null && exit 1
             done
             # fail if any locks in use
-            for f in /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock; do
+            for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
               fuser "$f" >/dev/null 2>&1 && exit 1 || true
             done
           register: apt_locks_free
@@ -72,10 +72,32 @@
             pkill -9 -x dpkg || true
             pkill -9 -f unattended-upgrade || true
             pkill -9 -x packagekitd || true
-            rm -f /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock
+            rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock
             dpkg --configure -a || true
 
   tasks:
+    # ── Belt & suspenders: clear any race right before apt ──
+    - name: Hard-kill leftover package managers (belt-and-suspenders)
+      shell: |
+        pkill -9 -x apt || true
+        pkill -9 -x apt-get || true
+        pkill -9 -x dpkg || true
+        pkill -9 -f unattended-upgrade || true
+        pkill -9 -x packagekitd || true
+
+    - name: Clear lingering dpkg/apt lock files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/dpkg/lock-frontend
+        - /var/lib/dpkg/lock
+        - /var/lib/apt/lists/lock
+
+    - name: Ensure dpkg is configured (in case of partial runs)
+      shell: dpkg --configure -a || true
+      changed_when: false
+
     - name: Install base packages (incl. open-iscsi)
       apt:
         name: "{{ base_packages }}"
