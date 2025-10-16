@@ -162,4 +162,159 @@
       when: make_longhorn_default
       command: >
         kubectl patch storageclass longhorn
-        -p '{"
+        -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: sc_patch
+      failed_when: false
+
+    # ===================== MetalLB =====================
+    - name: Install MetalLB components
+      command: "kubectl apply -f {{ metallb_version_manifest }}"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    - name: Wait for MetalLB controller Ready
+      command: "kubectl -n {{ metallb_ns }} rollout status deploy/controller --timeout=180s"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    - name: Wait for MetalLB speaker Ready
+      command: "kubectl -n {{ metallb_ns }} rollout status ds/speaker --timeout=180s"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    - name: Apply MetalLB IPAddressPool
+      copy:
+        dest: /tmp/metallb-ip-pool.yaml
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: lb-pool
+            namespace: {{ metallb_ns }}
+          spec:
+            addresses:
+              - {{ metallb_pool_range }}
+
+    - name: kubectl apply IPAddressPool
+      command: kubectl apply -f /tmp/metallb-ip-pool.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    - name: Apply MetalLB L2Advertisement
+      copy:
+        dest: /tmp/metallb-l2adv.yaml
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: lb-advert
+            namespace: {{ metallb_ns }}
+          spec:
+            ipAddressPools:
+              - lb-pool
+
+    - name: kubectl apply L2Advertisement
+      command: kubectl apply -f /tmp/metallb-l2adv.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    # ===================== Kasten K10 =====================
+    - name: Add Kasten Helm repo
+      command: helm repo add kasten https://charts.kasten.io/
+      register: k_repo
+      changed_when: "'has been added' in (k_repo.stdout + k_repo.stderr) or 'already exists' in (k_repo.stdout + k_repo.stderr)"
+
+    - name: Helm repo update (again)
+      command: helm repo update
+
+    - name: Install/upgrade Kasten K10
+      command: >
+        helm upgrade --install k10 kasten/k10
+        --namespace {{ kasten_ns }} --create-namespace
+        --set global.clusterName="{{ kasten_cluster_name }}"
+        --set global.persistence.storageClass=longhorn
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+
+    - name: Expose K10 gateway via LoadBalancer
+      command: >
+        kubectl -n {{ kasten_ns }} patch svc {{ kasten_gateway_svc }}
+        -p '{"spec":{"type":"LoadBalancer"}}'
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: patch_gw
+      failed_when: false
+
+    # -------- PVCs & Pending pods auto-recovery ----------
+    - name: Wait for Longhorn CSI driver to be registered
+      command: bash -lc "kubectl get csidrivers | grep -q driver.longhorn.io"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: csi_ok
+      retries: 30
+      delay: 5
+      until: csi_ok.rc == 0
+
+    - name: Show Kasten PVCs
+      command: kubectl -n {{ kasten_ns }} get pvc
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: pvc_list
+      changed_when: false
+
+    - name: Restart Kasten deployments that commonly wait on PVCs
+      command: kubectl -n {{ kasten_ns }} rollout restart deploy/{{ item }}
+      loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: restarts
+      failed_when: false
+
+    - name: Wait for those deployments to become Ready
+      command: kubectl -n {{ kasten_ns }} rollout status deploy/{{ item }} --timeout=300s
+      loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: rollout_status
+      failed_when: false
+
+    - name: Wait for K10 gateway external IP from MetalLB
+      command: >
+        bash -lc "kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }}
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: gw_ip
+      retries: 30
+      delay: 5
+      until: gw_ip.stdout | length > 0
+
+    - name: Final status - Kasten pods
+      command: kubectl -n {{ kasten_ns }} get pods -o wide
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: pods_out
+      changed_when: false
+
+    - name: Final status - Kasten PVCs
+      command: kubectl -n {{ kasten_ns }} get pvc
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: pvc_out
+      changed_when: false
+
+    - name: Final status - Gateway service
+      command: kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }} -o wide
+      environment:
+        KUBECONFIG: "{{ kubeconfig_root }}"
+      register: svc_out
+      changed_when: false
+
+    - debug:
+        msg:
+          - "{{ pods_out.stdout }}"
+          - "{{ pvc_out.stdout }}"
+          - "{{ svc_out.stdout }}"
+          - "Kasten UI: http://{{ gw_ip.stdout }}/k10/"
