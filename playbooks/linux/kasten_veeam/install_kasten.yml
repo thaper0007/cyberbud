@@ -1,4 +1,7 @@
 ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Play 1: Base packages + iSCSI on ALL nodes (with robust apt-lock handling)
+# ──────────────────────────────────────────────────────────────────────────────
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
   become: yes
@@ -11,10 +14,40 @@
       - nfs-common
       - open-iscsi
   pre_tasks:
+    # Stop/disable the timers so they don't re-trigger while we're installing
+    - name: Stop apt-daily timers (temporary)
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        masked: yes
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      failed_when: false
+
+    - name: Stop apt-daily services (temporary)
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+      failed_when: false
+
+    # Wait until no apt/dpkg/unattended-upgrades processes or locks are present
     - name: Wait for apt/dpkg locks to be released
-      shell: "! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1"
+      shell: |
+        set -e
+        # return 0 only when all are free
+        for i in {1..1}; do :; done  # no-op for shells without {..}
+        if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -f unattended-upgrade >/dev/null; then
+          exit 1
+        fi
+        if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then
+          exit 1
+        fi
       register: apt_locks_free
-      retries: 24
+      retries: 60
       delay: 5
       until: apt_locks_free.rc == 0
       changed_when: false
@@ -25,6 +58,8 @@
         name: "{{ base_packages }}"
         state: present
         update_cache: yes
+      environment:
+        DEBIAN_FRONTEND: noninteractive
 
     - name: Enable and start iscsid
       systemd:
@@ -32,34 +67,44 @@
         enabled: yes
         state: started
 
+  post_tasks:
+    # Re-enable the timers we paused
+    - name: Re-enable apt-daily timers
+      systemd:
+        name: "{{ item }}"
+        state: started
+        masked: no
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+      failed_when: false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Play 2: K3s/Helm (if needed), Longhorn, MetalLB, Kasten (unchanged)
+# ──────────────────────────────────────────────────────────────────────────────
 - name: Install K3s/Helm (if needed), Longhorn, MetalLB, and Kasten K10
   hosts: k3s_master
   become: yes
 
   vars:
-    # --- General ---
     install_k3s_channel: "stable"
-    kube_user: "parteek"     # local admin user on the master
+    kube_user: "parteek"
     kubeconfig_root: "/etc/rancher/k3s/k3s.yaml"
     kube_user_config: "/home/{{ kube_user }}/.kube/config"
 
-    # --- Longhorn ---
     longhorn_ns: "longhorn-system"
     longhorn_replica_count: 1
     make_longhorn_default: true
 
-    # --- MetalLB ---
     metallb_version_manifest: "https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml"
     metallb_ns: "metallb-system"
     metallb_pool_range: "172.30.50.210-172.30.50.240"
 
-    # --- Kasten ---
     kasten_ns: "kasten-io"
     kasten_cluster_name: "k8s-cluster"
     kasten_gateway_svc: "gateway"
 
   pre_tasks:
-    # -------- K3s (server) ----------
     - name: Check if k3s service exists
       shell: "systemctl list-unit-files | grep -E '^k3s\\.service'"
       register: k3s_service
@@ -87,14 +132,12 @@
 
     - name: Wait for Kubernetes API to be reachable
       command: kubectl cluster-info
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       register: cluster_info
       retries: 30
       delay: 5
       until: cluster_info.rc == 0
 
-    # -------- Helm ----------
     - name: Check if Helm is installed
       command: bash -lc "command -v helm"
       register: helm_check
@@ -103,15 +146,13 @@
 
     - name: Install Helm (if missing)
       shell: "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
-      args:
-        executable: /bin/bash
+      args: { executable: /bin/bash }
       when: helm_check.rc != 0
 
     - name: Verify Helm
       command: helm version
       changed_when: false
 
-    # -------- Kubeconfig for the user (so kubectl works without sudo) ----------
     - name: Create user kube dir
       file:
         path: "/home/{{ kube_user }}/.kube"
@@ -130,7 +171,7 @@
         remote_src: true
 
   tasks:
-    # ===================== Longhorn =====================
+    # Longhorn
     - name: Add Longhorn Helm repo
       command: helm repo add longhorn https://charts.longhorn.io
       register: lh_repo
@@ -143,46 +184,39 @@
       command: >
         helm upgrade --install longhorn longhorn/longhorn
         -n {{ longhorn_ns }} --create-namespace
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Wait for Longhorn manager to be ready
       command: "kubectl -n {{ longhorn_ns }} rollout status deploy/longhorn-manager --timeout=300s"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Set Longhorn default replica count (lab)
       command: >
         kubectl -n {{ longhorn_ns }} patch settings.longhorn.io default-replica-count
         --type=merge -p '{{ {"value": longhorn_replica_count|string} | to_json }}'
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Make Longhorn default StorageClass (optional)
       when: make_longhorn_default
       command: >
         kubectl patch storageclass longhorn
         -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       register: sc_patch
       failed_when: false
 
-    # ===================== MetalLB =====================
+    # MetalLB
     - name: Install MetalLB components
       command: "kubectl apply -f {{ metallb_version_manifest }}"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Wait for MetalLB controller Ready
       command: "kubectl -n {{ metallb_ns }} rollout status deploy/controller --timeout=180s"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Wait for MetalLB speaker Ready
       command: "kubectl -n {{ metallb_ns }} rollout status ds/speaker --timeout=180s"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Apply MetalLB IPAddressPool
       copy:
@@ -199,8 +233,7 @@
 
     - name: kubectl apply IPAddressPool
       command: kubectl apply -f /tmp/metallb-ip-pool.yaml
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Apply MetalLB L2Advertisement
       copy:
@@ -217,10 +250,9 @@
 
     - name: kubectl apply L2Advertisement
       command: kubectl apply -f /tmp/metallb-l2adv.yaml
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
-    # ===================== Kasten K10 =====================
+    # Kasten K10
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: k_repo
@@ -235,86 +267,59 @@
         --namespace {{ kasten_ns }} --create-namespace
         --set global.clusterName="{{ kasten_cluster_name }}"
         --set global.persistence.storageClass=longhorn
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
     - name: Expose K10 gateway via LoadBalancer
       command: >
         kubectl -n {{ kasten_ns }} patch svc {{ kasten_gateway_svc }}
         -p '{"spec":{"type":"LoadBalancer"}}'
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: patch_gw
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
-    # -------- PVCs & Pending pods auto-recovery ----------
+    # PVC & pending pods auto-recovery
     - name: Wait for Longhorn CSI driver to be registered
       command: bash -lc "kubectl get csidrivers | grep -q driver.longhorn.io"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       register: csi_ok
       retries: 30
       delay: 5
       until: csi_ok.rc == 0
 
-    - name: Show Kasten PVCs
-      command: kubectl -n {{ kasten_ns }} get pvc
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: pvc_list
-      changed_when: false
-
-    - name: Restart Kasten deployments that commonly wait on PVCs
+    - name: Restart Kasten deployments that need PVCs
       command: kubectl -n {{ kasten_ns }} rollout restart deploy/{{ item }}
       loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: restarts
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
     - name: Wait for those deployments to become Ready
       command: kubectl -n {{ kasten_ns }} rollout status deploy/{{ item }} --timeout=300s
       loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: rollout_status
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
     - name: Wait for K10 gateway external IP from MetalLB
       command: >
         bash -lc "kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }}
         -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       register: gw_ip
       retries: 30
       delay: 5
       until: gw_ip.stdout | length > 0
 
-    - name: Final status - Kasten pods
-      command: kubectl -n {{ kasten_ns }} get pods -o wide
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: pods_out
-      changed_when: false
-
-    - name: Final status - Kasten PVCs
-      command: kubectl -n {{ kasten_ns }} get pvc
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: pvc_out
-      changed_when: false
-
-    - name: Final status - Gateway service
-      command: kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }} -o wide
-      environment:
-        KUBECONFIG: "{{ kubeconfig_root }}"
-      register: svc_out
+    - name: Final status - pods/PVCs/service
+      shell: |
+        echo "--- Pods ---"
+        kubectl -n {{ kasten_ns }} get pods -o wide
+        echo "--- PVCs ---"
+        kubectl -n {{ kasten_ns }} get pvc
+        echo "--- Service ---"
+        kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }} -o wide
+      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
+      register: final_status
       changed_when: false
 
     - debug:
         msg:
-          - "{{ pods_out.stdout }}"
-          - "{{ pvc_out.stdout }}"
-          - "{{ svc_out.stdout }}"
+          - "{{ final_status.stdout }}"
           - "Kasten UI: http://{{ gw_ip.stdout }}/k10/"
