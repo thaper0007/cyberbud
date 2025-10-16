@@ -1,1 +1,32 @@
 
+---
+- name: Deploy Veeam Kasten K10 on K3s
+  hosts: k3s_master
+  become: yes
+  tasks:
+    - name: Add Kasten Helm repo
+      command: helm repo add kasten https://charts.kasten.io/
+      register: repo_result
+      changed_when: "'has been added' in repo_result.stdout or 'already exists' in repo_result.stderr"
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Install or upgrade Kasten K10
+      command: >
+        helm upgrade --install k10 kasten/k10
+        --namespace kasten-io --create-namespace
+        --set global.clusterName="k8s-cluster"
+        --set global.persistence.storageClass=longhorn
+
+    - name: Expose Kasten dashboard via LoadBalancer
+      command: >
+        kubectl -n kasten-io patch svc gateway
+        -p '{"spec":{"type":"LoadBalancer"}}'
+
+    - name: Show Kasten service status
+      command: kubectl -n kasten-io get svc gateway -o wide
+      register: svc_output
+
+    - debug:
+        var: svc_output.stdout_lines
