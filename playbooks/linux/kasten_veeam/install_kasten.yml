@@ -1,11 +1,12 @@
 ---
-- name: Deploy Veeam Kasten K10 on K3s (handles apt locks, installs helm)
+- name: Install K3s (if needed), Helm, then deploy Veeam Kasten K10
   hosts: k3s_master
   become: yes
   become_user: root
 
   vars:
-    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"   # k3s root-owned kubeconfig
+    install_k3s_channel: "stable"                  # or "v1.33"
+    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"   # root-owned kubeconfig created by k3s
     kasten_cluster_name: "k8s-cluster"
 
   pre_tasks:
@@ -18,7 +19,7 @@
       until: apt_locks_free.rc == 0
       changed_when: false
 
-    - name: Ensure base tools for Helm install are present
+    - name: Ensure base tools present
       apt:
         name:
           - curl
@@ -27,6 +28,44 @@
         state: present
         update_cache: yes
 
+    # ---------- K3s install if missing ----------
+    - name: Check if k3s service exists
+      shell: systemctl list-unit-files | grep -E '^k3s\.service'
+      register: k3s_service
+      failed_when: false
+      changed_when: false
+
+    - name: Install K3s server (if missing)
+      shell: |
+        set -e
+        curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL={{ install_k3s_channel }} sh -s -
+      when: k3s_service.rc != 0
+
+    - name: Ensure k3s service is active
+      systemd:
+        name: k3s
+        state: started
+        enabled: yes
+
+    - name: Wait for kubeconfig to appear
+      stat:
+        path: "{{ kubeconfig_path }}"
+      register: kcfg_stat
+      retries: 30
+      delay: 3
+      until: kcfg_stat.stat.exists
+      changed_when: false
+
+    - name: Wait for Kubernetes API to be reachable
+      command: kubectl cluster-info
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_info
+      retries: 30
+      delay: 5
+      until: cluster_info.rc == 0
+
+    # ---------- Helm install if missing ----------
     - name: Check if helm is already installed
       command: bash -lc "command -v helm"
       register: helm_check
@@ -46,19 +85,6 @@
       register: helm_ver
       changed_when: false
 
-    - name: Verify kubectl is available (provided by k3s)
-      command: bash -lc "command -v kubectl"
-      changed_when: false
-
-    - name: Wait for Kubernetes API to be reachable
-      command: kubectl cluster-info
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-      register: cluster_info
-      retries: 20
-      delay: 5
-      until: cluster_info.rc == 0
-
   tasks:
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
@@ -66,13 +92,9 @@
       changed_when: >
         'has been added' in (repo_result.stdout + repo_result.stderr) or
         'already exists' in (repo_result.stdout + repo_result.stderr)
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: Update Helm repos
       command: helm repo update
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: Install or upgrade Kasten K10
       command: >
@@ -90,7 +112,7 @@
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: Show K10 gateway service (watch for EXTERNAL-IP)
+    - name: Show K10 gateway service (EXTERNAL-IP)
       command: kubectl -n kasten-io get svc gateway -o wide
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
