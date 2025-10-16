@@ -1,12 +1,23 @@
 ---
-- name: Deploy Veeam Kasten K10 on K3s (install Helm if needed)
+- name: Deploy Veeam Kasten K10 on K3s (handles apt locks, installs helm)
   hosts: k3s_master
   become: yes
+  become_user: root
 
   vars:
-    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"  # root-owned kubeconfig from k3s
+    kubeconfig_path: "/etc/rancher/k3s/k3s.yaml"   # k3s root-owned kubeconfig
+    kasten_cluster_name: "k8s-cluster"
 
   pre_tasks:
+    - name: Wait for apt/dpkg locks to be released (up to ~2 minutes)
+      shell: |
+        ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1
+      register: apt_locks_free
+      retries: 24
+      delay: 5
+      until: apt_locks_free.rc == 0
+      changed_when: false
+
     - name: Ensure base tools for Helm install are present
       apt:
         name:
@@ -35,7 +46,7 @@
       register: helm_ver
       changed_when: false
 
-    - name: Verify kubectl is available (k3s provides it)
+    - name: Verify kubectl is available (provided by k3s)
       command: bash -lc "command -v kubectl"
       changed_when: false
 
@@ -67,7 +78,7 @@
       command: >
         helm upgrade --install k10 kasten/k10
         --namespace kasten-io --create-namespace
-        --set global.clusterName="k8s-cluster"
+        --set global.clusterName="{{ kasten_cluster_name }}"
         --set global.persistence.storageClass=longhorn
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
