@@ -1,3 +1,4 @@
+---
 # ──────────────────────────────────────────────────────────────────────────────
 # Play 1: Base packages + iSCSI on ALL nodes (serialized + robust apt handling)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -14,14 +15,15 @@
       - nfs-common
       - open-iscsi
 
-  - name: Disable APT sandboxing to avoid _apt permission issues
-  become: true
-  copy:
-    dest: /etc/apt/apt.conf.d/00disable-sandbox
-    owner: root
-    group: root
-    mode: '0644'
-    content: 'APT::Sandbox::User "root";\n'
+  pre_tasks:
+    - name: Disable APT sandboxing to avoid _apt permission issues
+      become: true
+      copy:
+        dest: /etc/apt/apt.conf.d/00disable-sandbox
+        owner: root
+        group: root
+        mode: '0644'
+        content: 'APT::Sandbox::User "root";\n'
 
     - name: Stop apt/upgrade timers (temporary)
       systemd:
@@ -143,7 +145,7 @@
       changed_when: false
       failed_when: false
 
-    - name: Install base packages (incl. open-iscsi) — fallback shell
+    - name: Install base packages (incl. open-iscsi)
       shell: |
         set -e
         umask 022
