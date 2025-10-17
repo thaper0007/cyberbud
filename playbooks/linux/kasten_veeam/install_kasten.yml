@@ -1,6 +1,6 @@
 ---
 # ──────────────────────────────────────────────────────────────────────────────
-# Play 1: Base packages + iSCSI on ALL nodes (serialized + robust apt-lock handling)
+# Play 1: Base packages + iSCSI on ALL nodes (serialized + robust apt handling)
 # ──────────────────────────────────────────────────────────────────────────────
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
@@ -80,16 +80,35 @@
       changed_when: true
       failed_when: false
 
-    # 🔧 Replace 'file:' removal with robust shell that handles immutable files
+    # 🔧 Repair perms/attrs for apt directories (fixes EACCES on locks)
+    - name: Ensure apt/dpkg directories exist with correct perms
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/var/lib/apt/lists", mode: "0755" }
+        - { path: "/var/lib/apt/lists/partial", mode: "0700" }
+        - { path: "/var/cache/apt", mode: "0755" }
+        - { path: "/var/cache/apt/archives/partial", mode: "0700" }
+
+    - name: Remove immutable bit from apt/dpkg lock paths (if set)
+      shell: |
+        for p in /var/lib/apt/lists /var/cache/apt /var/lib/dpkg \
+                 /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend; do
+          chattr -i "$p" 2>/dev/null || true
+        done
+      args: { executable: /bin/bash }
+      changed_when: false
+      failed_when: false
+
     - name: Clear lingering dpkg/apt lock files (robust)
       shell: |
         set -e
-        locks="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
-        for f in $locks; do
+        for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
           [ -e "$f" ] || continue
-          # if immutable, remove the attribute (ignore errors if chattr missing)
-          chattr -i "$f" 2>/dev/null || true
-          # try up to 6 times in case something races
           for i in 1 2 3 4 5 6; do
             rm -f "$f" 2>/dev/null && break || true
             sleep 1
@@ -103,16 +122,28 @@
       shell: dpkg --configure -a || true
       changed_when: false
 
-    # Rock-solid installer (retries)
+    - name: Clean and rebuild apt lists structure (idempotent)
+      shell: |
+        set -e
+        rm -rf /var/lib/apt/lists/partial 2>/dev/null || true
+        mkdir -p /var/lib/apt/lists/partial
+        chmod 0700 /var/lib/apt/lists/partial
+        apt-get clean
+      args: { executable: /bin/bash }
+      changed_when: false
+      failed_when: false
+
+    # ---- Rock-solid installer (retries) ----
     - name: Install base packages (incl. open-iscsi) — fallback shell
       shell: |
         set -e
+        umask 022
         export DEBIAN_FRONTEND=noninteractive
-        for i in {1..8}; do
+        for i in {1..10}; do
           apt-get update && \
           apt-get install -y --no-install-recommends {{ base_packages | join(' ') }} && exit 0
-          echo "apt busy, retry $i/8…"
-          sleep 10
+          echo "apt busy or EACCES, retry $i/10…"
+          sleep 8
         done
         echo "apt failed after retries" >&2
         exit 1
