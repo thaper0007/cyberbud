@@ -1,17 +1,6 @@
----
 # ──────────────────────────────────────────────────────────────────────────────
 # Play 1: Base packages + iSCSI on ALL nodes (serialized + robust apt handling)
 # ──────────────────────────────────────────────────────────────────────────────
-- name: Disable APT sandboxing to avoid _apt permission issues
-  become: yes
-  copy:
-    dest: /etc/apt/apt.conf.d/00disable-sandbox
-    owner: root
-    group: root
-    mode: '0644'
-    content: 'APT::Sandbox::User "root";\n'
-
-
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
   become: yes
@@ -26,6 +15,14 @@
       - open-iscsi
 
   pre_tasks:
+    - name: Disable APT sandboxing to avoid _apt permission issues
+      copy:
+        dest: /etc/apt/apt.conf.d/00disable-sandbox
+        owner: root
+        group: root
+        mode: '0644'
+        content: 'APT::Sandbox::User "root";\n'
+
     - name: Stop apt/upgrade timers (temporary)
       systemd:
         name: "{{ item }}"
@@ -90,7 +87,6 @@
       changed_when: true
       failed_when: false
 
-    # Keep parent dirs; do NOT change owners (Ubuntu expects _apt on partial/)
     - name: Ensure apt parent directories exist (no owner change)
       file:
         path: "{{ item.path }}"
@@ -100,7 +96,6 @@
         - { path: "/var/lib/apt/lists", mode: "0755" }
         - { path: "/var/cache/apt",     mode: "0755" }
 
-    # Ensure the partial dirs exist and are owned by _apt (uid 42), mode 0700
     - name: Ensure apt partial directories exist and are _apt-owned
       shell: |
         set -e
@@ -148,7 +143,6 @@
       changed_when: false
       failed_when: false
 
-    # Rock-solid installer (retries)
     - name: Install base packages (incl. open-iscsi) — fallback shell
       shell: |
         set -e
@@ -184,248 +178,3 @@
         name: packagekit
         masked: no
       failed_when: false
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Play 2: K3s/Helm (if needed), Longhorn, MetalLB, and Kasten K10
-# ──────────────────────────────────────────────────────────────────────────────
-- name: Install K3s/Helm (if needed), Longhorn, MetalLB, and Kasten K10
-  hosts: k3s_master
-  become: yes
-
-  vars:
-    install_k3s_channel: "stable"
-    kube_user: "parteek"
-    kubeconfig_root: "/etc/rancher/k3s/k3s.yaml"
-    kube_user_config: "/home/{{ kube_user }}/.kube/config"
-
-    longhorn_ns: "longhorn-system"
-    longhorn_replica_count: 1
-    make_longhorn_default: true
-
-    metallb_version_manifest: "https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml"
-    metallb_ns: "metallb-system"
-    metallb_pool_range: "172.30.50.210-172.30.50.240"
-
-    kasten_ns: "kasten-io"
-    kasten_cluster_name: "k8s-cluster"
-    kasten_gateway_svc: "gateway"
-
-  pre_tasks:
-    - name: Check if k3s service exists
-      shell: "systemctl list-unit-files | grep -E '^k3s\\.service'"
-      register: k3s_service
-      failed_when: false
-      changed_when: false
-
-    - name: Install K3s server (if missing)
-      shell: "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL={{ install_k3s_channel }} sh -s -"
-      when: k3s_service.rc != 0
-
-    - name: Ensure k3s is running and enabled
-      systemd:
-        name: k3s
-        state: started
-        enabled: yes
-
-    - name: Wait for kubeconfig file to exist
-      stat:
-        path: "{{ kubeconfig_root }}"
-      register: kcfg
-      retries: 30
-      delay: 3
-      until: kcfg.stat.exists
-      changed_when: false
-
-    - name: Wait for Kubernetes API to be reachable
-      command: kubectl cluster-info
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      register: cluster_info
-      retries: 30
-      delay: 5
-      until: cluster_info.rc == 0
-
-    - name: Check if Helm is installed
-      command: bash -lc "command -v helm"
-      register: helm_check
-      ignore_errors: true
-      changed_when: false
-
-    - name: Install Helm (if missing)
-      shell: "curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
-      args: { executable: /bin/bash }
-      when: helm_check.rc != 0
-
-    - name: Verify Helm
-      command: helm version
-      changed_when: false
-
-    - name: Create user kube dir
-      file:
-        path: "/home/{{ kube_user }}/.kube"
-        state: directory
-        mode: '0755'
-        owner: "{{ kube_user }}"
-        group: "{{ kube_user }}"
-
-    - name: Copy k3s kubeconfig to user
-      copy:
-        src: "{{ kubeconfig_root }}"
-        dest: "{{ kube_user_config }}"
-        owner: "{{ kube_user }}"
-        group: "{{ kube_user }}"
-        mode: '0600'
-        remote_src: true
-
-  tasks:
-    # Longhorn
-    - name: Add Longhorn Helm repo
-      command: helm repo add longhorn https://charts.longhorn.io
-      register: lh_repo
-      changed_when: "'has been added' in (lh_repo.stdout + lh_repo.stderr) or 'already exists' in (lh_repo.stdout + lh_repo.stderr)"
-
-    - name: Helm repo update
-      command: helm repo update
-
-    - name: Install/upgrade Longhorn
-      command: >
-        helm upgrade --install longhorn longhorn/longhorn
-        -n {{ longhorn_ns }} --create-namespace
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Wait for Longhorn manager to be ready
-      command: "kubectl -n {{ longhorn_ns }} rollout status deploy/longhorn-manager --timeout=300s"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Set Longhorn default replica count (lab)
-      command: >
-        kubectl -n {{ longhorn_ns }} patch settings.longhorn.io default-replica-count
-        --type=merge -p '{{ {"value": longhorn_replica_count|string} | to_json }}'
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Make Longhorn default StorageClass (optional)
-      when: make_longhorn_default
-      command: >
-        kubectl patch storageclass longhorn
-        -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      register: sc_patch
-      failed_when: false
-
-    # MetalLB
-    - name: Install MetalLB components
-      command: "kubectl apply -f {{ metallb_version_manifest }}"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Wait for MetalLB controller Ready
-      command: "kubectl -n {{ metallb_ns }} rollout status deploy/controller --timeout=180s"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Wait for MetalLB speaker Ready
-      command: "kubectl -n {{ metallb_ns }} rollout status ds/speaker --timeout=180s"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Apply MetalLB IPAddressPool
-      copy:
-        dest: /tmp/metallb-ip-pool.yaml
-        content: |
-          apiVersion: metallb.io/v1beta1
-          kind: IPAddressPool
-          metadata:
-            name: lb-pool
-            namespace: {{ metallb_ns }}
-          spec:
-            addresses:
-              - {{ metallb_pool_range }}
-
-    - name: kubectl apply IPAddressPool
-      command: kubectl apply -f /tmp/metallb-ip-pool.yaml
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Apply MetalLB L2Advertisement
-      copy:
-        dest: /tmp/metallb-l2adv.yaml
-        content: |
-          apiVersion: metallb.io/v1beta1
-          kind: L2Advertisement
-          metadata:
-            name: lb-advert
-            namespace: {{ metallb_ns }}
-          spec:
-            ipAddressPools:
-              - lb-pool
-
-    - name: kubectl apply L2Advertisement
-      command: kubectl apply -f /tmp/metallb-l2adv.yaml
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    # Kasten K10
-    - name: Add Kasten Helm repo
-      command: helm repo add kasten https://charts.kasten.io/
-      register: k_repo
-      changed_when: "'has been added' in (k_repo.stdout + k_repo.stderr) or 'already exists' in (k_repo.stdout + k_repo.stderr)"
-
-    - name: Helm repo update (again)
-      command: helm repo update
-
-    - name: Install/upgrade Kasten K10
-      command: >
-        helm upgrade --install k10 kasten/k10
-        --namespace {{ kasten_ns }} --create-namespace
-        --set global.clusterName="{{ kasten_cluster_name }}"
-        --set global.persistence.storageClass=longhorn
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-
-    - name: Expose K10 gateway via LoadBalancer
-      command: >
-        kubectl -n {{ kasten_ns }} patch svc {{ kasten_gateway_svc }}
-        -p '{"spec":{"type":"LoadBalancer"}}'
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      failed_when: false
-
-    # PVC & pending pods auto-recovery
-    - name: Wait for Longhorn CSI driver to be registered
-      command: bash -lc "kubectl get csidrivers | grep -q driver.longhorn.io"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      register: csi_ok
-      retries: 30
-      delay: 5
-      until: csi_ok.rc == 0
-
-    - name: Restart Kasten deployments that need PVCs
-      command: kubectl -n {{ kasten_ns }} rollout restart deploy/{{ item }}
-      loop: [catalog-svc, jobs-svc, logging-svc, metering-svc, prometheus-server]
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      failed_when: false
-
-    - name: Wait for those deployments to become Ready
-      command: kubectl -n {{ kasten_ns }} rollout status deploy/{{ item }} --timeout=300s
-      loop: [catalog-svc, jobs-svc, logging-svc, metering-svc, prometheus-server]
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      failed_when: false
-
-    - name: Wait for K10 gateway external IP from MetalLB
-      command: >
-        bash -lc "kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }}
-        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      register: gw_ip
-      retries: 30
-      delay: 5
-      until: gw_ip.stdout | length > 0
-
-    - name: Final status - pods/PVCs/service
-      shell: |
-        echo "--- Pods ---"
-        kubectl -n {{ kasten_ns }} get pods -o wide
-        echo "--- PVCs ---"
-        kubectl -n {{ kasten_ns }} get pvc
-        echo "--- Service ---"
-        kubectl -n {{ kasten_ns }} get svc {{ kasten_gateway_svc }} -o wide
-      environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
-      register: final_status
-      changed_when: false
-
-    - debug:
-        msg:
-          - "{{ final_status.stdout }}"
-          - "Kasten UI: http://{{ gw_ip.stdout }}/k10/"
