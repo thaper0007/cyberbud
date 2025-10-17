@@ -5,7 +5,7 @@
 - name: Ensure base packages + iSCSI on all nodes
   hosts: k3s_cluster
   become: yes
-  serial: 1            # Run one host at a time to avoid apt lock races
+  serial: 1
   vars:
     base_packages:
       - curl
@@ -21,19 +21,14 @@
         name: "{{ item }}"
         state: stopped
         masked: yes
-      loop:
-        - apt-daily.timer
-        - apt-daily-upgrade.timer
+      loop: [apt-daily.timer, apt-daily-upgrade.timer]
       failed_when: false
 
     - name: Stop apt/upgrade services (temporary)
       systemd:
         name: "{{ item }}"
         state: stopped
-      loop:
-        - apt-daily.service
-        - apt-daily-upgrade.service
-        - unattended-upgrades.service
+      loop: [apt-daily.service, apt-daily-upgrade.service, unattended-upgrades.service]
       failed_when: false
 
     - name: Stop PackageKit (can hold apt lock)
@@ -43,16 +38,13 @@
         masked: yes
       failed_when: false
 
-    # Wait up to ~5 minutes; if still locked, the rescue block force-cleans safely.
     - block:
         - name: Wait for apt/dpkg locks to be released
           shell: |
             set -e
-            # fail if any package managers running
             for p in apt apt-get dpkg unattended-upgrade packagekitd; do
               pgrep -x "$p" >/dev/null && exit 1
             done
-            # fail if any locks in use
             for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock; do
               fuser "$f" >/dev/null 2>&1 && exit 1 || true
             done
@@ -72,41 +64,46 @@
             pkill -9 -x dpkg || true
             pkill -9 -f unattended-upgrade || true
             pkill -9 -x packagekitd || true
-            rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock
             dpkg --configure -a || true
           changed_when: true
           failed_when: false
 
   tasks:
-    # ── Safer kill: enumerate PIDs and kill them; never fail the play here ──
     - name: Ensure no package managers are running (safe PID kill loop)
       shell: |
         set -euo pipefail
         for p in apt apt-get dpkg unattended-upgrade packagekitd; do
           pgrep -x "$p" >/dev/null 2>&1 || continue
-          for pid in $(pgrep -x "$p"); do
-            kill -9 "$pid" 2>/dev/null || true
-          done
+          for pid in $(pgrep -x "$p"); do kill -9 "$pid" 2>/dev/null || true; done
         done
-      args:
-        executable: /bin/bash
+      args: { executable: /bin/bash }
       changed_when: true
       failed_when: false
 
-    - name: Clear lingering dpkg/apt lock files
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /var/lib/dpkg/lock-frontend
-        - /var/lib/dpkg/lock
-        - /var/lib/apt/lists/lock
+    # 🔧 Replace 'file:' removal with robust shell that handles immutable files
+    - name: Clear lingering dpkg/apt lock files (robust)
+      shell: |
+        set -e
+        locks="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
+        for f in $locks; do
+          [ -e "$f" ] || continue
+          # if immutable, remove the attribute (ignore errors if chattr missing)
+          chattr -i "$f" 2>/dev/null || true
+          # try up to 6 times in case something races
+          for i in 1 2 3 4 5 6; do
+            rm -f "$f" 2>/dev/null && break || true
+            sleep 1
+          done
+        done
+      args: { executable: /bin/bash }
+      changed_when: true
+      failed_when: false
 
     - name: Ensure dpkg is configured (in case of partial runs)
       shell: dpkg --configure -a || true
       changed_when: false
 
-    # ---- Rock-solid installer (retries) ----
+    # Rock-solid installer (retries)
     - name: Install base packages (incl. open-iscsi) — fallback shell
       shell: |
         set -e
@@ -119,8 +116,7 @@
         done
         echo "apt failed after retries" >&2
         exit 1
-      args:
-        executable: /bin/bash
+      args: { executable: /bin/bash }
 
     - name: Enable and start iscsid
       systemd:
@@ -134,9 +130,7 @@
         name: "{{ item }}"
         state: started
         masked: no
-      loop:
-        - apt-daily.timer
-        - apt-daily-upgrade.timer
+      loop: [apt-daily.timer, apt-daily-upgrade.timer]
       failed_when: false
 
     - name: Unmask PackageKit (optional)
@@ -153,29 +147,24 @@
   become: yes
 
   vars:
-    # General
     install_k3s_channel: "stable"
     kube_user: "parteek"
     kubeconfig_root: "/etc/rancher/k3s/k3s.yaml"
     kube_user_config: "/home/{{ kube_user }}/.kube/config"
 
-    # Longhorn
     longhorn_ns: "longhorn-system"
     longhorn_replica_count: 1
     make_longhorn_default: true
 
-    # MetalLB
     metallb_version_manifest: "https://raw.githubusercontent.com/metallb/metallb/v0.14.8/config/manifests/metallb-native.yaml"
     metallb_ns: "metallb-system"
     metallb_pool_range: "172.30.50.210-172.30.50.240"
 
-    # Kasten
     kasten_ns: "kasten-io"
     kasten_cluster_name: "k8s-cluster"
     kasten_gateway_svc: "gateway"
 
   pre_tasks:
-    # ---- K3s (server) ----
     - name: Check if k3s service exists
       shell: "systemctl list-unit-files | grep -E '^k3s\\.service'"
       register: k3s_service
@@ -209,7 +198,6 @@
       delay: 5
       until: cluster_info.rc == 0
 
-    # ---- Helm ----
     - name: Check if Helm is installed
       command: bash -lc "command -v helm"
       register: helm_check
@@ -225,7 +213,6 @@
       command: helm version
       changed_when: false
 
-    # ---- kubeconfig for user (handy for CLI) ----
     - name: Create user kube dir
       file:
         path: "/home/{{ kube_user }}/.kube"
@@ -244,7 +231,6 @@
         remote_src: true
 
   tasks:
-    # ================= Longhorn =================
     - name: Add Longhorn Helm repo
       command: helm repo add longhorn https://charts.longhorn.io
       register: lh_repo
@@ -278,7 +264,6 @@
       register: sc_patch
       failed_when: false
 
-    # ================= MetalLB =================
     - name: Install MetalLB components
       command: "kubectl apply -f {{ metallb_version_manifest }}"
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
@@ -325,7 +310,6 @@
       command: kubectl apply -f /tmp/metallb-l2adv.yaml
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
-    # ================= Kasten K10 =================
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: k_repo
@@ -349,7 +333,6 @@
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
-    # PVC & pending pods auto-recovery
     - name: Wait for Longhorn CSI driver to be registered
       command: bash -lc "kubectl get csidrivers | grep -q driver.longhorn.io"
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
@@ -360,13 +343,13 @@
 
     - name: Restart Kasten deployments that need PVCs
       command: kubectl -n {{ kasten_ns }} rollout restart deploy/{{ item }}
-      loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
+      loop: [catalog-svc, jobs-svc, logging-svc, metering-svc, prometheus-server]
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
     - name: Wait for those deployments to become Ready
       command: kubectl -n {{ kasten_ns }} rollout status deploy/{{ item }} --timeout=300s
-      loop: [ "catalog-svc", "jobs-svc", "logging-svc", "metering-svc", "prometheus-server" ]
+      loop: [catalog-svc, jobs-svc, logging-svc, metering-svc, prometheus-server]
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
