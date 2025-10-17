@@ -74,16 +74,24 @@
             pkill -9 -x packagekitd || true
             rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock
             dpkg --configure -a || true
+          changed_when: true
+          failed_when: false
 
   tasks:
-    # ── Belt & suspenders: clear any race right before apt ──
-    - name: Hard-kill leftover package managers (belt-and-suspenders)
+    # ── Safer kill: enumerate PIDs and kill them; never fail the play here ──
+    - name: Ensure no package managers are running (safe PID kill loop)
       shell: |
-        pkill -9 -x apt || true
-        pkill -9 -x apt-get || true
-        pkill -9 -x dpkg || true
-        pkill -9 -f unattended-upgrade || true
-        pkill -9 -x packagekitd || true
+        set -euo pipefail
+        for p in apt apt-get dpkg unattended-upgrade packagekitd; do
+          pgrep -x "$p" >/dev/null 2>&1 || continue
+          for pid in $(pgrep -x "$p"); do
+            kill -9 "$pid" 2>/dev/null || true
+          done
+        done
+      args:
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
 
     - name: Clear lingering dpkg/apt lock files
       file:
