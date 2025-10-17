@@ -16,6 +16,14 @@
       - open-iscsi
 
   pre_tasks:
+    - name: Disable APT sandboxing to avoid _apt permission issues
+      copy:
+        dest: /etc/apt/apt.conf.d/00disable-sandbox
+        owner: root
+        group: root
+        mode: '0644'
+        content: 'APT::Sandbox::User "root";\n'
+
     - name: Stop apt/upgrade timers (temporary)
       systemd:
         name: "{{ item }}"
@@ -69,14 +77,6 @@
           failed_when: false
 
   tasks:
-    - name: Disable APT sandboxing to avoid _apt permission issues
-      copy:
-        dest: /etc/apt/apt.conf.d/00disable-sandbox
-        owner: root
-        group: root
-        mode: '0644'
-        content: 'APT::Sandbox::User "root";\n'
-
     - name: Ensure no package managers are running (safe PID kill loop)
       shell: |
         set -euo pipefail
