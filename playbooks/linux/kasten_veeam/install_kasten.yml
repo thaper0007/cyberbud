@@ -80,19 +80,25 @@
       changed_when: true
       failed_when: false
 
-    # 🔧 Repair perms/attrs for apt directories (fixes EACCES on locks)
-    - name: Ensure apt/dpkg directories exist with correct perms
+    # Keep parent dirs; do NOT change owners (Ubuntu expects _apt on partial/)
+    - name: Ensure apt parent directories exist (no owner change)
       file:
         path: "{{ item.path }}"
         state: directory
-        owner: root
-        group: root
         mode: "{{ item.mode }}"
       loop:
         - { path: "/var/lib/apt/lists", mode: "0755" }
-        - { path: "/var/lib/apt/lists/partial", mode: "0700" }
-        - { path: "/var/cache/apt", mode: "0755" }
-        - { path: "/var/cache/apt/archives/partial", mode: "0700" }
+        - { path: "/var/cache/apt",     mode: "0755" }
+
+    # Ensure the partial dirs exist and are owned by _apt (uid 42), mode 0700
+    - name: Ensure apt partial directories exist and are _apt-owned
+      shell: |
+        set -e
+        install -d -m 0700 -o _apt -g root /var/lib/apt/lists/partial
+        install -d -m 0700 -o _apt -g root /var/cache/apt/archives/partial
+        chmod 0700 /var/lib/apt/lists/partial /var/cache/apt/archives/partial
+      args: { executable: /bin/bash }
+      changed_when: false
 
     - name: Remove immutable bit from apt/dpkg lock paths (if set)
       shell: |
@@ -126,14 +132,13 @@
       shell: |
         set -e
         rm -rf /var/lib/apt/lists/partial 2>/dev/null || true
-        mkdir -p /var/lib/apt/lists/partial
-        chmod 0700 /var/lib/apt/lists/partial
+        install -d -m 0700 -o _apt -g root /var/lib/apt/lists/partial
         apt-get clean
       args: { executable: /bin/bash }
       changed_when: false
       failed_when: false
 
-    # ---- Rock-solid installer (retries) ----
+    # Rock-solid installer (retries)
     - name: Install base packages (incl. open-iscsi) — fallback shell
       shell: |
         set -e
@@ -262,6 +267,7 @@
         remote_src: true
 
   tasks:
+    # Longhorn
     - name: Add Longhorn Helm repo
       command: helm repo add longhorn https://charts.longhorn.io
       register: lh_repo
@@ -295,6 +301,7 @@
       register: sc_patch
       failed_when: false
 
+    # MetalLB
     - name: Install MetalLB components
       command: "kubectl apply -f {{ metallb_version_manifest }}"
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
@@ -341,6 +348,7 @@
       command: kubectl apply -f /tmp/metallb-l2adv.yaml
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
 
+    # Kasten K10
     - name: Add Kasten Helm repo
       command: helm repo add kasten https://charts.kasten.io/
       register: k_repo
@@ -364,6 +372,7 @@
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
       failed_when: false
 
+    # PVC & pending pods auto-recovery
     - name: Wait for Longhorn CSI driver to be registered
       command: bash -lc "kubectl get csidrivers | grep -q driver.longhorn.io"
       environment: { KUBECONFIG: "{{ kubeconfig_root }}" }
