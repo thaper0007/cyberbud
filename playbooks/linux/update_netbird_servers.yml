@@ -1,4 +1,9 @@
-- name: Pull latest Netbird images
+---
+- name: Update Netbird Server
+  hosts: netbird_server
+  become: yes
+  tasks:
+    - name: Pull latest Netbird images
       shell: docker-compose pull
       args:
         chdir: /home/parteek
