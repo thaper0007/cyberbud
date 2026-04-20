@@ -1,6 +1,6 @@
 ---
 - name: Update Netbird Server
-  hosts: netbird_server
+  hosts: netbird_servers
   become: yes
   tasks:
     - name: Pull latest Netbird images
