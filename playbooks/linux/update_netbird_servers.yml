@@ -8,13 +8,8 @@
       args:
         chdir: /home/parteek
 
-    - name: Stop Netbird containers
-      shell: docker-compose down
-      args:
-        chdir: /home/parteek
-
-    - name: Start Netbird containers
-      shell: docker-compose up -d
+    - name: Recreate containers with latest images (no down)
+      shell: docker-compose up -d --remove-orphans
       args:
         chdir: /home/parteek
 
