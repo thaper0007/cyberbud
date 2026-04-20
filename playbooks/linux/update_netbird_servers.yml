@@ -1,15 +1,29 @@
 ---
-- name: Update Netbird Servers
-  hosts: netbird_servers
+- name: Update Netbird Server
+  hosts: netbird_server
   become: yes
   tasks:
-    - name: Update apt package cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
+    - name: Pull latest Netbird images
+      shell: docker-compose pull
+      args:
+        chdir: ~/netbird
 
-    - name: Upgrade all packages to latest version
-      apt:
-        upgrade: dist
-        autoremove: yes
-        autoclean: yes
+    - name: Stop Netbird containers
+      shell: docker-compose down
+      args:
+        chdir: ~/netbird
+
+    - name: Start Netbird containers
+      shell: docker-compose up -d
+      args:
+        chdir: ~/netbird
+
+    - name: Verify running containers
+      shell: docker ps --format "table {{.Names}}\t{{.Status}}"
+      args:
+        chdir: ~/netbird
+      register: docker_status
+
+    - name: Show container status
+      debug:
+        msg: "{{ docker_status.stdout_lines }}"
