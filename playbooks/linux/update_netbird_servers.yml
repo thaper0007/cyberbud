@@ -1,27 +1,20 @@
----
-- name: Update Netbird Server
-  hosts: netbird_servers
-  become: yes
-  tasks:
-    - name: Pull latest Netbird images
+- name: Pull latest Netbird images
       shell: docker-compose pull
       args:
-        chdir: ~/netbird
+        chdir: /home/parteek
 
     - name: Stop Netbird containers
       shell: docker-compose down
       args:
-        chdir: ~/netbird
+        chdir: /home/parteek
 
     - name: Start Netbird containers
       shell: docker-compose up -d
       args:
-        chdir: ~/netbird
+        chdir: /home/parteek
 
     - name: Verify running containers
       shell: docker ps --format "table {{.Names}}\t{{.Status}}"
-      args:
-        chdir: ~/netbird
       register: docker_status
 
     - name: Show container status
