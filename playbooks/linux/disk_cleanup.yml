@@ -1,0 +1,81 @@
+---
+- name: Disk space cleanup and prevention
+  # NOTE: This playbook sets up a weekly cron job on each host to handle
+  # ongoing cleanup automatically. Once applied, you do not need to run
+  # this playbook again as a recurring job — the cron job takes over.
+  # Re-run manually only if you want an immediate one-off cleanup.
+  hosts: linux_servers
+  become: yes
+  tasks:
+    - name: Ensure dpkg is not in a broken state
+      ansible.builtin.command: dpkg --configure -a
+      changed_when: false
+      failed_when: false
+
+    - name: Remove unused kernels and packages
+      ansible.builtin.apt:
+        autoremove: yes
+        purge: yes
+
+    - name: Clear apt package cache
+      ansible.builtin.apt:
+        clean: yes
+
+    - name: Vacuum systemd journal to 100M
+      ansible.builtin.command: journalctl --vacuum-size=100M
+      changed_when: false
+
+    - name: Set permanent journald size limits
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: "^#?SystemMaxUse="
+        line: "SystemMaxUse=200M"
+      notify: restart journald
+
+    - name: Set permanent journald file size limit
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/journald.conf
+        regexp: "^#?SystemMaxFileSize="
+        line: "SystemMaxFileSize=50M"
+      notify: restart journald
+
+    - name: Ensure apt-autoremove log file exists
+      ansible.builtin.file:
+        path: /var/log/apt-autoremove.log
+        state: touch
+        mode: "0644"
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Install weekly cron job for kernel/package cleanup
+      ansible.builtin.cron:
+        name: "Weekly apt autoremove purge"
+        user: root
+        minute: "0"
+        hour: "3"
+        weekday: "0"
+        job: "apt-get -y autoremove --purge >> /var/log/apt-autoremove.log 2>&1"
+
+    - name: Install weekly cron job for apt cache clean
+      ansible.builtin.cron:
+        name: "Weekly apt clean"
+        user: root
+        minute: "0"
+        hour: "3"
+        weekday: "0"
+        job: "apt-get clean >> /var/log/apt-autoremove.log 2>&1"
+
+    - name: Check disk usage after cleanup
+      ansible.builtin.command: df -h /
+      register: disk_usage
+      changed_when: false
+
+    - name: Show disk usage
+      ansible.builtin.debug:
+        var: disk_usage.stdout_lines
+
+  handlers:
+    - name: restart journald
+      ansible.builtin.systemd:
+        name: systemd-journald
+        state: restarted
