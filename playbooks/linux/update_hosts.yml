@@ -19,9 +19,9 @@
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Wait for automatic updates to finish
+    - name: Wait for apt lock to be free
       ansible.builtin.shell: |
-        while pgrep -x unattended-upgr > /dev/null; do sleep 5; done
+        timeout 300 bash -c 'while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done'
       changed_when: false
 
     - name: Upgrade all packages
