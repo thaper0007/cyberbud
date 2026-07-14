@@ -3,6 +3,11 @@
   hosts: "{{ target_hosts | default('linux_servers') }}"
   become: yes
   tasks:
+    - name: Ensure dpkg is not in a broken state
+      ansible.builtin.command: dpkg --configure -a
+      changed_when: false
+      failed_when: false
+
     - name: Hold linux-firmware on semaphore host (workaround mirror 500)
       command: apt-mark hold linux-firmware
       when: inventory_hostname == "ansible-semaphore"
@@ -13,6 +18,11 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
+
+    - name: Wait for automatic updates to finish
+      ansible.builtin.shell: |
+        while pgrep -x unattended-upgr > /dev/null; do sleep 5; done
+      changed_when: false
 
     - name: Upgrade all packages
       apt:
